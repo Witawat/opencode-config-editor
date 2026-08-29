@@ -30,6 +30,17 @@ python -m venv .venv
 .venv\Scripts\pip install pyinstaller
 ```
 
+### 2.5. ใช้ `build.bat` (ทางลัด)
+
+```powershell
+build.bat            # บิ้วแบบปกติ (ถ้าขาด pyinstaller จะติดตั้งให้เอง)
+build.bat --clean    # ลบ build/dist ก่อนบิ้ว
+```
+
+- เรียกใช้ด้วย double-click หรือ cmd ได้เลย
+- อ่าน `opencode_editor.spec` (onefile + windowed + icon opencode.ico)
+- ผลลัพธ์: `dist\opencode-config-editor.exe` (~48 MB)
+
 **Nuitka (ทางเลือก - ไฟล์เล็ก เปิดไว แต่ build ช้า)**
 
 ```powershell
@@ -40,17 +51,27 @@ python -m venv .venv
 
 #### PyInstaller
 
+มี spec ที่พร้อมแล้ว (`opencode_editor.spec`) — ใช้ไอคอน opencode จาก `assets/opencode.ico` และ `--windowed`:
+
+```powershell
+.venv\Scripts\pyinstaller --noconfirm --clean opencode_editor.spec
+```
+
+หรือสั่งตรงแบบเดิม:
+
 ```powershell
 .venv\Scripts\pyinstaller --noconfirm --onefile --windowed `
   --name "opencode-config-editor" `
+  --icon "assets\opencode.ico" `
   --collect-all PySide6 `
   main.py
 ```
 
 - `--windowed`: สำคัญ — ไม่ให้หน้าต่าง console ผุดขึ้น
 - `--collect-all PySide6`: สำคัญ — bundle plugin platform (qwindows) ครบ; ทิ้งแล้วแอปพังตอนเปิด
+- `--icon`: ไอคอน opencode (สกัดจาก repo ทางการ — `assets/opencode.ico`)
 
-ผลลัพธ์: `dist\opencode-config-editor.exe`
+ผลลัพธ์: `dist\opencode-config-editor.exe` (~48 MB)
 
 ตรวจ: `dist\opencode-config-editor.exe` เปิดแล้วขึ้น window
 

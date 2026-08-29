@@ -9,7 +9,7 @@
 
 1. Fork / สร้าง branch
 2. ทำการเปลี่ยนแปลง — ปฏิบัติตาม "ห้ามทำ" ใน `AGENTS.md`
-3. เทส: รัน `test_smoke.py` ให้ผ่าน (หรือเพิ่ม/แก้ unit test ตาม `PLAN.md` Phase 4)
+3. เทส: รันชุดเทสให้ผ่าน — `test_roundtrip.py` (unit), `test_functional.py <copy-config>` (e2e), `test_smoke.py`
 4. Commit ตาม [Conventional Commits](https://www.conventionalcommits.org/) เช่น `feat`, `fix`, `docs`, `refactor`
 5. เปิด PR — อธิบายผลที่เปลี่ยน (ก่อน/หลัง) ให้ชัด
 
@@ -21,9 +21,12 @@
 ## การเขียนโค้ด
 
 - **UI แยกจาก data**: ฟอร์มแก้ค่าต้องผ่าน `ConfigModel` เท่านั้น ไม่เข้าถึงไฟล์ตรง
+- **Merge ไม่ rebuild**: ทุก panel commit ต้อง merge เฉพาะ field ที่รู้จัก — ห้ามสร้าง dict ใหม่ทิ้ง key ที่ UI ไม่รู้จัก (`interleaved`, `toolbar`, ฯลฯ)
 - **Preserve key**: ตอน save อย่าลืม `$schema`, `env`/`environment`
+- **Touch-sensitive**: ค่า 0 / uncheck ที่ไม่ได้แก้ อย่าเขียนทับ (ดู `_orig_cost`, `_cost_edited`, `_comp_touched`)
 - **Type hints**: ใช้ `from __future__ import annotations`
-- **ความปลอดภัย**: อย่า commit `opencode.json` จริง หรือ apiKey
+- **ความปลอดภัย**: อย่า commit `opencode.json` จริง หรือ apiKey — preview/copy ต้องผ่าน `mask_secrets()`
+- **ฟีเจอร์ใหม่มีปุ่ม ต้องมี test สอง**
 
 ## เทสและ lint
 

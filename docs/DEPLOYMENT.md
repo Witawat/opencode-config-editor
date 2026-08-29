@@ -27,7 +27,7 @@ run.bat
 
 ### 3b. ลงทะเบียนเป็น service ด้วย NSSM (ทางเลือก สำหรับใช้ต่อเนื่อง)
 
-> มักไม่จำเป็นสำหรับ desktop GUI — service ต้องการ UI ที่ไม่ต้อง man-เกินไปถ้าใช้ `--windowed` อยู่แล้ว ใช้ NSSM เฉพาะถ้าต้องให้รันพร้อม machine และมี account sessile มากพอ
+> มักไม่จำเป็นสำหรับ desktop GUI — service ต้องไม่ต้อง man-เกินไปถ้าใช้ `--windowed` อยู่แล้ว ใช้ NSSM เฉพาะถ้าต้องให้รันพร้อม machine และมี account sessile มากพอ
 
 ```powershell
 nssm install OpenCodeConfigEditor "D:\MyCode\opencode-config-editor\dist\opencode-config-editor.exe"

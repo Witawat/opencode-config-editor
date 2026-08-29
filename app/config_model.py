@@ -17,6 +17,16 @@ from jsonschema import Draft202012Validator, ValidationError
 # The authoritative schema that defines the shape of opencode.json.
 SCHEMA_URL = "https://opencode.ai/config.json"
 
+# Errors we know are schema-vs-reality mismatches in upstream opencode:
+#  - McpLocalConfig schema declares "environment" (no "env", additionalProps
+#    false), but opencode accepts/env parses "env" for historical configs.
+#  - Model identifiers are validated against a fixed models.dev enum; custom
+#    providers (e.g. "inferx/...") trigger enum false positives.
+# We keep showing these errors (transparency) but annotate them as benign.
+BENIGN_SCHEMA_PATTERNS = (
+    "' is not one of ['",   # models.dev enum: custom provider not listed
+)
+
 # MCP servers live under the "mcp" key. Everything else we care about for v1.
 DEFAULT_CONFIG_PATH = os.path.expandvars(r"%USERPROFILE%\.config\opencode\opencode.json")
 
@@ -53,8 +63,16 @@ class ConfigModel:
         validator = Draft202012Validator(schema)
         errors: list[str] = []
         for err in sorted(validator.iter_errors(self.data), key=lambda e: list(e.path)):
-            errors.append(f"{'/'.join(str(p) for p in err.path) or '(top)'}: {err.message}")
+            errors.append(f"{'/'.join(str(p) for p in err.path) or '(top)'}: {self._shorten(err.message)}")
         return errors
+
+    @staticmethod
+    def _shorten(msg: str, limit: int = 240) -> str:
+        """Shorten very long messages (e.g. giant model enums) for the UI."""
+        msg = msg.strip()
+        if len(msg) <= limit:
+            return msg
+        return msg[:limit].rstrip() + " …"
 
     @staticmethod
     def fetch_schema() -> dict[str, Any]:

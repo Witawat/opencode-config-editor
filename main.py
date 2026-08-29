@@ -17,6 +17,10 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("opencode-config-editor")
 
+    from app.styles import apply_theme, current_font_size, current_theme
+
+    apply_theme(app, current_theme(), current_font_size())
+
     path = sys.argv[1] if len(sys.argv) > 1 else ConfigModel.DEFAULT_CONFIG_PATH
     try:
         config = ConfigModel.load(path)

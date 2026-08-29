@@ -5,6 +5,8 @@ forms -- one for a selected provider, one for a selected model.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
@@ -38,6 +40,9 @@ class ProviderPanel(QWidget):
         self.config = config
         self._selected_provider = None
         self._selected_model = None
+        # Cost values loaded from the model, so commit can distinguish an
+        # untouched QDoubleSpinBox (default 0) from a genuine 0 price.
+        self._orig_cost: dict[str, float] = {}
         self._building = False
 
         self._build_ui()
@@ -51,6 +56,11 @@ class ProviderPanel(QWidget):
 
         # Left: navigation tree + add buttons
         left = QVBoxLayout()
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("กรอง provider / model...")
+        self.filter.textChanged.connect(self._apply_filter)
+        left.addWidget(self.filter)
+
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.itemSelectionChanged.connect(self._on_selection)
@@ -90,14 +100,34 @@ class ProviderPanel(QWidget):
         self.f_baseurl = QLineEdit()
         self.f_apikey = QLineEdit()
         self.f_apikey.setEchoMode(QLineEdit.Password)
+
+        api_row = QHBoxLayout()
+        api_row.addWidget(self.f_apikey, stretch=1)
+        self.btn_apikey = QPushButton("แสดง")
+        self.btn_apikey.setCheckable(True)
+        self.btn_apikey.setToolTip("แสดง/ซ่อน apiKey")
+        self.btn_apikey.toggled.connect(self._toggle_apikey_echo)
+        api_row.addWidget(self.btn_apikey)
+        api_row.setContentsMargins(0, 0, 0, 0)
+
         self.f_whitelist = QTextEdit()
         self.f_whitelist.setPlaceholderText("หนึ่ง model ต่อบรรทัด (whitelist)")
 
         form.addRow("npm", self.f_npm)
         form.addRow("name", self.f_name)
         form.addRow("baseURL", self.f_baseurl)
-        form.addRow("apiKey", self.f_apikey)
+        form.addRow("apiKey", api_row)
         form.addRow("whitelist", self.f_whitelist)
+
+        net_row = QHBoxLayout()
+        self.btn_test_api = QPushButton("ทดสอบ API")
+        self.btn_test_api.clicked.connect(self.test_api)
+        self.btn_fetch_wl = QPushButton("ดึง whitelist (registry)")
+        self.btn_fetch_wl.clicked.connect(self.fetch_whitelist_from_registry)
+        net_row.addWidget(self.btn_test_api)
+        net_row.addWidget(self.btn_fetch_wl)
+        net_row.addStretch()
+        form.addRow("", net_row)
 
         self.provider_form = w
         self.stack.addWidget(w)
@@ -131,8 +161,22 @@ class ProviderPanel(QWidget):
         self.m_cost_cache_write.setRange(0, 1_000_000)
         self.m_cost_cache_write.setDecimals(4)
 
+        # Record which cost boxes the user actually touched, so an explicit 0
+        # (free model) is kept while an untouched box (also 0) is not written.
+        self._cost_edited: set[str] = set()
+        self.m_cost_in.valueChanged.connect(lambda _: self._cost_edited.add("input"))
+        self.m_cost_out.valueChanged.connect(lambda _: self._cost_edited.add("output"))
+        self.m_cost_cache_read.valueChanged.connect(lambda _: self._cost_edited.add("cache_read"))
+        self.m_cost_cache_write.valueChanged.connect(lambda _: self._cost_edited.add("cache_write"))
+
         self.m_options = QTextEdit()
         self.m_options.setPlaceholderText("JSON options เช่น {\"image\": true, ...}")
+
+        self.m_extra = QTextEdit()
+        self.m_extra.setPlaceholderText(
+            "key อื่นที่ form ไม่รู้จัก (เช่น interleaved) — ใส่ JSON เช่น {\"interleaved\": {\"field\": \"reasoning_content\"}}\n"
+            "ว่าง = ลบ key ที่ไม่รู้จัก (ระวัง: ทั้งหมด)"
+        )
 
         form.addRow("id", self.m_id)
         form.addRow("display name", self.m_name)
@@ -145,6 +189,14 @@ class ProviderPanel(QWidget):
         form.addRow("cost.cache_read", self.m_cost_cache_read)
         form.addRow("cost.cache_write", self.m_cost_cache_write)
         form.addRow("options (JSON)", self.m_options)
+        form.addRow("extra keys (JSON)", self.m_extra)
+
+        auto_row = QHBoxLayout()
+        self.btn_autofill = QPushButton("ดึงค่าอัตโนมัติ (models.dev)")
+        self.btn_autofill.clicked.connect(self.autofill_model)
+        auto_row.addWidget(self.btn_autofill)
+        auto_row.addStretch()
+        form.addRow("", auto_row)
 
         note = QLabel("* ราคาต่อ 1M tokens ตาม convention ของ opencode")
         note.setStyleSheet("color:#888;")
@@ -159,11 +211,32 @@ class ProviderPanel(QWidget):
         self.config = config
         self._populate()
 
+    def _toggle_apikey_echo(self, show: bool) -> None:
+        self.f_apikey.setEchoMode(QLineEdit.Normal if show else QLineEdit.Password)
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            pitem = self.tree.topLevelItem(i)
+            pname = pitem.text(0)
+            matched = needle in pname.lower() if needle else True
+            visible = matched
+            for j in range(pitem.childCount()):
+                citem = pitem.child(j)
+                cmatched = needle in citem.text(0).lower() if needle else True
+                citem.setHidden(not cmatched)
+                if cmatched:
+                    visible = True
+            pitem.setHidden(not visible)
+        self.tree.expandAll()
+
     def _populate(self) -> None:
         self._building = True
         self.tree.clear()
         self._selected_provider = None
         self._selected_model = None
+        self._orig_cost = {}
+        self._cost_edited = set()
 
         for pname, pdata in self.config.providers.items():
             pitem = QTreeWidgetItem([pname])
@@ -191,6 +264,9 @@ class ProviderPanel(QWidget):
             return
         item = items[0]
         kind = item.data(0, Qt.UserRole)
+        # Commit whatever is currently shown so switching items does not drop
+        # in-flight edits (e.g. typed provider name, then user clicks a model).
+        self._commit_shown()
         if kind[0] == "provider":
             self._show_provider(kind[1])
         elif kind[0] == "model":
@@ -198,6 +274,8 @@ class ProviderPanel(QWidget):
 
     def _show_provider(self, pname: str) -> None:
         self._selected_provider = pname
+        self._orig_cost = {}
+        self._cost_edited = set()
         p = self.config.provider(pname) or {}
         self.f_npm.setText(str(p.get("npm", "")))
         self.f_name.setText(str(p.get("name", "")))
@@ -223,15 +301,25 @@ class ProviderPanel(QWidget):
         self.m_output.setValue(int(limit.get("output", 0) or 0))
 
         cost = m.get("cost", {}) or {}
+        self._orig_cost = {
+            k: v for k, v in cost.items() if isinstance(v, (int, float)) and v is not None
+        }
         self.m_cost_in.setValue(parse_money(cost.get("input")) or 0)
         self.m_cost_out.setValue(parse_money(cost.get("output")) or 0)
         self.m_cost_cache_read.setValue(parse_money(cost.get("cache_read")) or 0)
         self.m_cost_cache_write.setValue(parse_money(cost.get("cache_write")) or 0)
+        # setValue() above fires valueChanged; drop those synthetic events so
+        # only real user edits count as "touched".
+        self._cost_edited.clear()
 
         import json
 
         opts = m.get("options", {}) or {}
         self.m_options.setPlainText(json.dumps(opts, ensure_ascii=False, indent=2) if opts else "")
+        # Extra keys the form does not understand (interleaved, etc.)
+        known = {"id", "name", "reasoning", "tool_call", "limit", "cost", "options"}
+        extra = {k: v for k, v in m.items() if k not in known}
+        self.m_extra.setPlainText(json.dumps(extra, ensure_ascii=False, indent=2) if extra else "")
         self.stack.setCurrentIndex(1)
 
     # ---- mutation --------------------------------------------------------
@@ -260,6 +348,7 @@ class ProviderPanel(QWidget):
         if not ok or not mkey.strip():
             return
         mkey = mkey.strip()
+        self._commit_shown()  # don't drop edits of the currently visible form
         p = self.config.add_provider(pname)
         p.setdefault("models", {})[mkey] = {}
         self._populate()
@@ -284,14 +373,16 @@ class ProviderPanel(QWidget):
 
     # ---- commit ----------------------------------------------------------
 
+    def _commit_shown(self) -> None:
+        """Commit whichever form is currently visible, if anything selected."""
+        if self.stack.currentIndex() == 0 and self._selected_provider:
+            self._commit_provider_fields()
+        elif self.stack.currentIndex() == 1 and self._selected_model:
+            self._commit_model_fields()
+
     def commit(self) -> None:
         """Write pending field values into config.data for whichever is selected."""
-        if self._selected_provider:
-            # Provider form (always show latest, harmless to re-commit selected provider)
-            if self.stack.currentIndex() == 0:
-                self._commit_provider_fields()
-            if self._selected_model and self.stack.currentIndex() == 1:
-                self._commit_model_fields()
+        self._commit_shown()
 
     def _commit_provider_fields(self) -> None:
         pname = self._selected_provider
@@ -328,8 +419,12 @@ class ProviderPanel(QWidget):
         p = self.config.add_provider(pname)
         models = p.setdefault("models", {})
         m = models.setdefault(mkey, {})
+        # Merge instead of rebuild: keep keys the UI does not know about
+        # (e.g. "interleaved", "attachment", future schema keys).
         if self.m_id.text():
             m["id"] = self.m_id.text()
+        else:
+            m.pop("id", None)
         if self.m_name.text():
             m["name"] = self.m_name.text()
         else:
@@ -352,7 +447,9 @@ class ProviderPanel(QWidget):
             (self.m_cost_cache_read.value(), "cache_read"),
             (self.m_cost_cache_write.value(), "cache_write"),
         ]:
-            if val:
+            # Keep 0 only when it matters: the model already had that cost key
+            # (free model), or the user explicitly touched the box (set it to 0).
+            if val != 0 or key in self._orig_cost or key in self._cost_edited:
                 cost[key] = val
         if cost:
             m["cost"] = cost
@@ -366,8 +463,162 @@ class ProviderPanel(QWidget):
                 QMessageBox.warning(self, "options ไม่ใช่ JSON", "ข้ามตัว options (ไม่บันทึก)")
         else:
             m.pop("options", None)
+        extra_txt = self.m_extra.toPlainText().strip()
+        if extra_txt:
+            try:
+                extra_obj = json.loads(extra_txt)
+            except json.JSONDecodeError:
+                QMessageBox.warning(self, "extra keys ไม่ใช่ JSON", "ข้ามตัว extra keys (ไม่บันทึก)")
+                extra_obj = None
+            if extra_obj is not None and isinstance(extra_obj, dict):
+                known = {"id", "name", "reasoning", "tool_call", "limit", "cost", "options"}
+                for k in list(extra_obj):
+                    if k in known:
+                        QMessageBox.warning(self, "extra keys ข้ามคีย์ที่รู้จัก",
+                                            f"'{k}' เป็นคีย์ของ form ปกติ ไม่บังคับใส่ extra")
+                        extra_obj.pop(k)
+                for k, v in extra_obj.items():
+                    m[k] = v
+        else:
+            pass  # do NOT drop unknown keys on empty -- merge keeps them
 
     # ---- helpers ---------------------------------------------------------
+
+    def test_api(self) -> None:
+        """Probe {baseURL}/models with the current apiKey, show result."""
+        pname = self._selected_provider
+        if not pname:
+            QMessageBox.information(self, "ทดสอบ API", "เลือก provider ก่อน")
+            return
+        base = self.f_baseurl.text().strip()
+        if not base:
+            QMessageBox.warning(self, "ทดสอบ API", "ยังไม่มี baseURL (กรอกก่อนทดสอบ)")
+            return
+        from .model_registry import test_provider_api
+
+        self.btn_test_api.setEnabled(False)
+        self.btn_test_api.setText("กำลังทดสอบ...")
+        try:
+            res = test_provider_api(base, self.f_apikey.text().strip())
+        finally:
+            self.btn_test_api.setEnabled(True)
+            self.btn_test_api.setText("ทดสอบ API")
+        if not res.get("ok"):
+            QMessageBox.warning(self, "ทดสอบ API", f"{pname}:\n{res.get('message', 'ไม่สำเร็จ')}")
+            return
+        models = res.get("models")
+        msg = res.get("message", "")
+        if models and self._selected_provider:
+            # suggest whitelist (semi-protective: ask first)
+            ans = QMessageBox.question(
+                self, "ทดสอบ API",
+                f"{msg}\n\nต้องการเติมรายชื่อ model ทั้งหมดที่เจอ ({len(models)} ตัว) ลง whitelist หรือไม่?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ans == QMessageBox.Yes:
+                current = set(s.strip() for s in self.f_whitelist.toPlainText().splitlines() if s.strip())
+                for m in models:
+                    current.add(m)
+                self.f_whitelist.setPlainText("\n".join(sorted(current)))
+                self._mark_changed()
+                QMessageBox.information(self, "ทดสอบ API", f"เติม whitelist แล้ว ({len(current)} รายการ)")
+        else:
+            QMessageBox.information(self, "ทดสอบ API", msg)
+
+    def fetch_whitelist_from_registry(self) -> None:
+        """Fill whitelist from models.dev registry for this provider name."""
+        pname = self._selected_provider
+        if not pname:
+            QMessageBox.information(self, "ดึง whitelist", "เลือก provider ก่อน")
+            return
+        from .model_registry import search_models
+
+        self.btn_fetch_wl.setEnabled(False)
+        self.btn_fetch_wl.setText("กำลังดึง...")
+        try:
+            ids = search_models(pname)
+        finally:
+            self.btn_fetch_wl.setEnabled(True)
+            self.btn_fetch_wl.setText("ดึง whitelist (registry)")
+        if not ids:
+            QMessageBox.information(
+                self, "ดึง whitelist",
+                f"ไม่พบ provider '{pname}' ใน registry models.dev\n(เฉพาะ provider ใน registry เท่านั้น supporting)",
+            )
+            return
+        current = set(s.strip() for s in self.f_whitelist.toPlainText().splitlines() if s.strip())
+        current.update(ids)
+        self.f_whitelist.setPlainText("\n".join(sorted(current)))
+        self._mark_changed()
+        QMessageBox.information(self, "ดึง whitelist", f"เติมแล้ว ({len(current)} รายการจาก registry)")
+
+    def autofill_model(self) -> None:
+        """Fill limit/cost/reasoning/tool_call from models.dev for the current model."""
+        pname, mkey = self._selected_provider, self._selected_model
+        if not pname or not mkey:
+            QMessageBox.information(self, "ดึงค่าอัตโนมัติ", "เลือก model ก่อน")
+            return
+        from .model_registry import find_model_info
+
+        self.btn_autofill.setEnabled(False)
+        self.btn_autofill.setText("กำลังค้นหา...")
+        try:
+            info = find_model_info(pname, mkey)
+        finally:
+            self.btn_autofill.setEnabled(True)
+            self.btn_autofill.setText("ดึงค่าอัตโนมัติ (models.dev)")
+        if not info:
+            QMessageBox.information(
+                self, "ดึงค่าอัตโนมัติ",
+                f"ไม่พบ '{pname}/{mkey}' ใน models.dev\nกรอกเอง (หรือใช้ปุ่มทดสอบ API ของ provider)",
+            )
+            return
+
+        import json as _json
+
+        lim = info.get("limit") or {}
+        cost = info.get("cost") or {}
+        if lim.get("context") is not None:
+            self.m_context.setValue(int(lim["context"]))
+        if lim.get("output") is not None:
+            self.m_output.setValue(int(lim["output"]))
+        if cost.get("input") is not None:
+            self.m_cost_in.setValue(float(cost["input"]))
+        if cost.get("output") is not None:
+            self.m_cost_out.setValue(float(cost["output"]))
+        if cost.get("cache_read") is not None:
+            self.m_cost_cache_read.setValue(float(cost["cache_read"]))
+        if cost.get("cache_write") is not None:
+            self.m_cost_cache_write.setValue(float(cost["cache_write"]))
+        self.m_reasoning.setChecked(bool(info.get("reasoning", False)))
+        self.m_tool_call.setChecked(bool(info.get("tool_call", False)))
+        if info.get("name"):
+            self.m_name.setText(str(info["name"]))
+        # merge options-ish data (interleaved etc.) into extra keys
+        extra: dict[str, Any] = {}
+        if isinstance(info.get("interleaved"), dict):
+            extra["interleaved"] = info["interleaved"]
+        if isinstance(info.get("options"), dict):
+            for k, v in info["options"].items():
+                extra.setdefault(k, v)
+        if extra:
+            current = self.m_extra.toPlainText().strip()
+            merged: dict[str, Any] = {}
+            if current:
+                try:
+                    parsed = _json.loads(current)
+                    if isinstance(parsed, dict):
+                        merged.update(parsed)
+                except _json.JSONDecodeError:
+                    pass
+            merged.update(extra)
+            self.m_extra.setPlainText(_json.dumps(merged, ensure_ascii=False, indent=2))
+        self._mark_changed()
+        found = []
+        if lim: found.append("limit")
+        if cost: found.append("cost")
+        found.append("ความจุ")
+        QMessageBox.information(self, "ดึงค่าอัตโนมัติ", f"เติมแล้วจาก models.dev (ต่อไปนี้: {', '.join(found)})")
 
     def _mark_changed(self) -> None:
         self.data_changed.emit()

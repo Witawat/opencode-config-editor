@@ -22,11 +22,17 @@
 
 | โมดูล | หน้าที่ |
 |---|---|
-| `config_model.py` | `load()`, `save()`, `schema_errors()`, `fetch_schema()`, `providers`, `mcp` |
-| `main_window.py` | `MainWindow`: toolbar, mode switcher, `open/save/reload/validate` |
-| `provider_panel.py` | tree provider/model + ฟอร์ม provider + ฟอร์ม model |
-| `mcp_panel.py` | list mcp + ฟอร์ม local/remote |
-| `test_smoke.py` | ยิง round-trip โดยไม่เปิดหน้าจอ |
+| `config_model.py` | `load()`, `save()`, `schema_errors()` (+`_shorten`), `fetch_schema()`, `providers`, `mcp`, `parse_money` |
+| `main_window.py` | `MainWindow`: toolbar, mode switcher, `open/save/save_as/reload/validate`, recent files, shortcuts, dirty guard |
+| `provider_panel.py` | tree provider/model + ฟอร์ม provider + ฟอร์ม model (+ filters, ฟอร์ม extra keys, autofill/test buttons) |
+| `mcp_panel.py` | list mcp + ฟอร์ม local/remote (command ด้วย `shlex`) |
+| `misc_panels.py` | agent / skill / permission panels |
+| `global_panel.py` | top-level: model/small_model/instructions/compaction/whitelist/blacklist |
+| `preview_panel.py` | live JSON + `mask_secrets()` (apiKey/headers → `***`) |
+| `model_registry.py` | ดึง models.dev + find/search model + `test_provider_api` + `check_mcp_command` |
+| `styles.py` | themes dark/light QSS + font size + QSettings (`remember()`/`load_recent()`) |
+| `test_roundtrip.py` | unit test (38) |
+| `test_functional.py` | e2e ขับ widgets จริง |
 
 ## 5. Config: รากฐานข้อมูล
 
@@ -39,17 +45,24 @@
 - `plugin` เป็น array
 - `mcp[name].command` เป็น array ไม่ใช่ string; `type` จำเป็น
 - `permission` เป็น string หรือ object keyed-by-tool
+- schema `McpLocalConfig` อนุญาต `environment` เท่านั้น (ไม่รวม `env`, additionalProps false) → key `env` โดน flag — แต่ opencode รันได้จริง (known-issue)
 
 ## 6. API
 
-ไม่มี HTTP endpoint ภายใน แต่มี interface กับ **external schema** คือ `https://opencode.ai/config.json` ที่ถูก `requests.get` ดึงมา validate ดู `docs/API.md`
+ไม่มี HTTP endpoint ภายใน แต่ติดต่อ external 2 ตัว:
+- `https://opencode.ai/config.json` — schema (validate)
+- `https://models.dev/api.json` — registry (auto-fill limit/cost/reasoning + whitelist) — ดู `docs/API.md`
 
 ## 7. กับดักบิว
 
-- **PyInstaller** ต้อง bundle PySide6: ใช้ `--collect-all PySide6` หรือ `--collect-binaries PySide6` มิฉะนั้นแอปเปิดมาเ้ด่นรายงาน error หา plugin แพลตฟอร์ม
+- **PyInstaller** ต้อง bundle PySide6: ใช้ `opencode_editor.spec` (`--collect-all PySide6` อยู่ใน hint ของ build.bat) หรือ `--collect-binaries PySide6` มิฉะนั้นแอปเปิดมาเ้ด่นรายงาน error หา plugin แพลตฟอร์ม
 - **QDoubleSpinBox** ไม่เก็บข้อความ — ถ้า user ต้องการราคา "0.007" ต้องตั้ง `decimals=4` (ตั้งแล้ว)
 - **env vs environment**: config ของ opencode ในป่าใช้ทั้ง `env` และ `environment` สำหรับ mcp; editor ต้อง preserve key เดิม (ดู `mcp_panel.py` `_env_key`)
+- **cost 0 (model ฟรี)**: QDoubleSpinBox default 0 — save จะทิ้ง 0 ที่ "ไม่ได้แตะ" แต่เก็บ 0 เมื่อ key มีอยู่เดิมหรือ user แก้จริง (ดู `_orig_cost`/`_cost_edited`)
+- **checkbox compaction**: เขียนเฉพาะเมื่อ user แตะจริง (uncheck = pop key) — ใช้ `_comp_touched` เช่นเดียวกับ cost
 - **offscreen test**: ตั้ง `QT_QPA_PLATFORM=offscreen` เพื่อรัน GUI ใน CI/headless
+- **QMessageBox/QInputDialog บล็อกใน offscreen**: test ต้อง `mock.patch` ก่อนเรียก
+- **console encoding (cp874)**: รันเทสด้วย `-X utf8` เพื่อไม่ให้ส่ง error Thai
 
 ## 8. ความปลอดภัย
 
@@ -59,9 +72,10 @@
 
 ## 9. เทส
 
-- `test_smoke.py` — ใช้ offscreen platform, load config จริง, สร้าง window, commit + save + reload แล้วเทียบ keys ว่าครบ
-- จุดที่ยังไม่มี: unit test per-field ของ `config_model` (ราคา parse, schema error formatting)
+- `test_roundtrip.py` — 38 unit tests (parse_money, schema_errors format+shorten, merge กัน data loss, cost 0, shlex, env preserve, agent/skill/permission/global, mask_secrets, registry pure-logic)
+- `test_functional.py` — e2e ขับ widget จริง (20 checks)
+- `test_smoke.py` — offscreen round-trip เทียบคีย์ครบ
 
 ## 10. Roadmap
 
-ดู `docs/PLAN.md` — v1 ครอบ provider/model/ราคา/context/mcp; v2+ อาจเพิ่ม `agent` / `skill` / `permission` tabs และ live preview JSON
+ดู `docs/PLAN.md` — v1 ครอบ provider/model/ราคา/context/mcp; v2+: agent/skill/permission + live preview + global + auto-fill + UI polish (เสร็จแล้วทั้งหมด); เหลือ: ตรวจ `.exe` เครื่องสะอาด, NSSM/shell:startup

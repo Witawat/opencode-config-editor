@@ -20,6 +20,18 @@
   "small_model": "provider/model-id",
   "instructions": ["AGENTS.md", "docs/style.md"],
 
+  "agent": {
+    "build": { "model": "provider/model-id", "mode": "primary", "prompt": "..." }
+  },
+  "skills": {
+    "paths": ["D:\\MyCode\\skills"],
+    "urls": ["https://example.com/.well-known/skills/"]
+  },
+  "permission": {
+    "bash": "allow",
+    "webfetch": { "ask": "ยืนยัน" }
+  },
+
   "provider": {
     "my-provider": {
       "npm": "@ai-sdk/openai-compatible",
@@ -34,7 +46,8 @@
           "tool_call": true,
           "limit": { "context": 1000000, "output": 65536 },
           "cost": { "input": 0.1, "output": 0.2, "cache_read": 0.01, "cache_write": 0.5 },
-          "options": { "image": true }
+          "options": { "image": true },
+          "interleaved": { "field": "reasoning_content" }
         }
       }
     }
@@ -63,14 +76,22 @@
 }
 ```
 
-## ช่องที่ editor ครอบคลุม (v1)
+## ช่องที่ editor ครอบคลุม
 
 | กลุ่ม | ช่อง | รูปแบบ |
 |---|---|---|
+| Global (แท็บ Global) | `model`, `small_model` | string |
+| Global | `instructions` | list of path |
+| Global | `compaction.auto` / `.prune` | boolean |
+| Global | `compaction.tail_turns` / `.preserve_recent_tokens` / `.reserved` | uint |
+| Global | `enabled_providers` (whitelist) / `disabled_providers` (blacklist) | list of string |
+| Agent | `model`, `mode` (subagent/primary/all), `color`, `disable`, `hidden`, `temperature`, `top_p`, `steps`, `description`, `prompt` | ตาม schema |
+| Skill | `skills.paths`, `skills.urls` | list editor |
+| Permission | `permission.[tool]` (read/edit/bash/task/...) | ask / allow / deny หรือ object |
 | Provider | `npm` | string |
 | Provider | `name` | string |
 | Provider | `options.baseURL` | string |
-| Provider | `options.apiKey` | string (ซ่อนการพิมพ์) |
+| Provider | `options.apiKey` | string (ซ่อนการพิมพ์, ปุ่มแสดง/ซ่อน) |
 | Provider | `whitelist` | one-model-per-line |
 | Model | `id` | string |
 | Model | `name` | string |
@@ -80,12 +101,19 @@
 | Model | `limit.output` | uint (tokens) |
 | Model | `cost.input` / `.output` / `.cache_read` / `.cache_write` | float ต่อ 1M tokens |
 | Model | `options` | JSON block |
+| Model | `extra keys` (เช่น `interleaved`) | JSON block (merge, ไม่ลบ) |
 | MCP | `type` | `local` / `remote` |
-| MCP | `command` | split by space → array |
+| MCP | `command` | parse ด้วย `shlex` → array (รองรับ arg มีช่องว่าง) |
 | MCP | `url` | string |
 | MCP | `headers` | JSON block |
 | MCP | `environment` / `env` | JSON block (preserve key เดิม) |
 | MCP | `enabled` | boolean |
+
+## เครื่องมืออัตโนมัติ (`app/model_registry.py`)
+
+- **ดึงค่าอัตโนมัติ (models.dev)** — ในฟอร์ม model: เติม `limit`/`cost`/`reasoning`/`tool_call`/`name`/`interleaved` จาก registry `https://models.dev/api.json` (cached ต่อ session, offline คืนค่าเดิม)
+- **ทดสอบ API** — ในฟอร์ม provider: `GET {baseURL}/models` (Bearer apiKey ถ้ามี) → แจงผล + เสนอเติม whitelist จาก response
+- **ดึง whitelist (registry)** — เติม `whitelist` ทั้งหมดที่ registry มีของ provider นี้
 
 ## กฎการ validate
 

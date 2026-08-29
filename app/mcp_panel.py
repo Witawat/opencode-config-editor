@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -129,7 +130,12 @@ class MCPPanel(QWidget):
         self.f_type.setCurrentText(t)
         self.f_enabled.setChecked(bool(srv.get("enabled", True)))
         if t == "local":
-            self.f_command.setText(" ".join(srv.get("command", [])))
+            try:
+                command = srv.get("command", [])
+                text = shlex.join(command) if isinstance(command, list) else str(command)
+            except Exception:
+                text = " ".join(map(str, srv.get("command", []))) if isinstance(srv.get("command"), list) else ""
+            self.f_command.setText(text)
             self.f_env.setPlainText(json.dumps(env, ensure_ascii=False, indent=2) if env else "")
         else:
             self.f_command.clear()
@@ -172,9 +178,15 @@ class MCPPanel(QWidget):
         srv["enabled"] = self.f_enabled.isChecked()
         t = self.f_type.currentText()
         if t == "local":
-            args = [a for a in self.f_command.text().split() if a]
-            if args:
-                srv["command"] = args
+            cmdtext = self.f_command.text().strip()
+            if cmdtext:
+                try:
+                    args = shlex.split(cmdtext)
+                except ValueError:
+                    QMessageBox.warning(self, "command ไม่ถูกต้อง", "คำสั่งมี quote ไม่สมดุล — คง command เดิมไว้")
+                    args = None
+                if args:
+                    srv["command"] = args
             else:
                 srv.pop("command", None)
             envtxt = self.f_env.toPlainText().strip()
