@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Build output
+dist/
+build/
+*.spec
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets — อย่า commit opencode.json จริง (มี apiKey)
+opencode.json
+*.bak
+
+# Test / temp
+*.log
