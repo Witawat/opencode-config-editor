@@ -7,6 +7,17 @@
 ### Added
 - เอกสารชุดโปรเจกต์: `AGENTS.md`, `KNOWLEDGE_BASE.md`, `docs/*`, `PLAN.md`, รวมถึง `CHANGELOG.md`, `CONTRIBUTING.md`, `.gitignore`
 
+## [0.3.0] — 2026-08-29
+
+### Added
+- Drag-drop เรียงลำดับ model ภายใน provider (ซิงก์กลับ config อัตโนมัติ)
+- Sort provider/model ตามตัวอักษรใน tree
+- Copy/Paste model (ข้าม provider ได้) + ปุ่ม collapse/expand tree
+- Batch edit cost/limit หลาย model พร้อมกัน
+- Offline schema cache (validate ได้แม้ไม่มีเน็ต)
+- Theme auto-follow system (dark/light/auto วนสลับ)
+- Undo/Redo (Ctrl+Z/Y) + ปุ่ม "เทียบ diff" กับไฟล์บนดิสก์
+
 ## [0.2.0] — 2026-08-29
 
 ### Added

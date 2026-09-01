@@ -75,14 +75,42 @@ class ConfigModel:
         return msg[:limit].rstrip() + " …"
 
     @staticmethod
-    def fetch_schema() -> dict[str, Any]:
-        """Download the opencode JSON schema. Returns {} on failure."""
+    def _schema_cache_path() -> str:
+        """Local cache file for the downloaded schema (works offline later)."""
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "opencode-config-editor")
+        os.makedirs(folder, exist_ok=True)
+        return os.path.join(folder, "config.schema.json")
+
+    @staticmethod
+    def fetch_schema(timeout: int = 15) -> dict[str, Any]:
+        """Download the opencode JSON schema, caching to disk for offline use.
+
+        Returns {} only if both network and cache fail.
+        """
+        cache_path = ConfigModel._schema_cache_path()
         try:
-            resp = requests.get(SCHEMA_URL, timeout=15)
+            resp = requests.get(SCHEMA_URL, timeout=timeout)
             resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException:
-            return {}
+            data = resp.json()
+            if isinstance(data, dict):
+                try:
+                    with open(cache_path, "w", encoding="utf-8") as fh:
+                        json.dump(data, fh, ensure_ascii=False)
+                except OSError:
+                    pass
+                return data
+        except (requests.RequestException, ValueError):
+            pass
+        # offline fallback: read the last successfully cached schema
+        try:
+            with open(cache_path, "r", encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if isinstance(cached, dict) and cached:
+                return cached
+        except (OSError, ValueError):
+            pass
+        return {}
 
     # ---- convenience accessors -----------------------------------------
 

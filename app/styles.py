@@ -84,6 +84,28 @@ def current_theme() -> str:
     return v if v in ("dark", "light") else DEFAULT_THEME
 
 
+def system_is_dark() -> bool:
+    """Detect the OS theme via the default QApplication palette."""
+    app = QApplication.instance()
+    if app is None:
+        return False
+    from PySide6.QtGui import QPalette
+
+    win = app.palette().color(QPalette.Window)
+    # A light window color is "brighter" than dark; compare luminance.
+    lum = 0.299 * win.red() + 0.587 * win.green() + 0.114 * win.blue()
+    return lum < 128
+
+
+def effective_theme() -> str:
+    """theme from settings, or follow system when set to 'auto'."""
+    s = settings()
+    v = s.value("ui/theme", "auto")
+    if v in ("dark", "light"):
+        return v
+    return "dark" if system_is_dark() else "light"
+
+
 def remember(window) -> None:
     """Persist UI state after a successful session."""
     s = settings()

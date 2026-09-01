@@ -2,6 +2,8 @@
 
 Layout: left QTreeWidget of providers and their models, right a stacked set of
 forms -- one for a selected provider, one for a selected model.
+
+Models can be reordered via drag-and-drop within the same provider.
 """
 from __future__ import annotations
 
@@ -27,9 +29,54 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QTextEdit,
+    QAbstractItemView,
 )
 
 from .config_model import ConfigModel, parse_money
+
+
+class _ReorderTree(QTreeWidget):
+    """Tree widget that syncs model order back to config on drop."""
+
+    order_changed = Signal(str)  # provider name
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def dropEvent(self, event):
+        dragged = self.currentItem()
+        if not dragged:
+            event.ignore()
+            return
+        kind = dragged.data(0, Qt.UserRole)
+        # Only allow dragging model (child) items, not providers
+        if not kind or kind[0] != "model":
+            event.ignore()
+            return
+        # Determine target parent (the provider item)
+        target = self.itemAt(event.position().toPoint())
+        if target is None:
+            event.ignore()
+            return
+        target_kind = target.data(0, Qt.UserRole)
+        if target_kind and target_kind[0] == "model":
+            target = target.parent()
+        elif target_kind and target_kind[0] == "provider":
+            pass  # drop onto provider row itself
+        else:
+            event.ignore()
+            return
+        # Only allow same-provider moves
+        source_parent = dragged.parent()
+        if source_parent is None or target is None or source_parent is not target:
+            event.ignore()
+            return
+        super().dropEvent(event)
+        pname = target.text(0) if target else ""
+        if pname:
+            self.order_changed.emit(pname)
 
 
 class ProviderPanel(QWidget):
@@ -44,6 +91,7 @@ class ProviderPanel(QWidget):
         # untouched QDoubleSpinBox (default 0) from a genuine 0 price.
         self._orig_cost: dict[str, float] = {}
         self._building = False
+        self._clipboard_model: dict[str, Any] | None = None
 
         self._build_ui()
         self._populate()
@@ -61,26 +109,60 @@ class ProviderPanel(QWidget):
         self.filter.textChanged.connect(self._apply_filter)
         left.addWidget(self.filter)
 
-        self.tree = QTreeWidget()
+        self.tree = _ReorderTree()
         self.tree.setHeaderHidden(True)
         self.tree.itemSelectionChanged.connect(self._on_selection)
+        self.tree.order_changed.connect(self._sync_model_order)
         left.addWidget(self.tree)
 
-        btns = QHBoxLayout()
+        # Row 1: add / delete
+        btns1 = QHBoxLayout()
         btn_add_provider = QPushButton("+ Provider")
+        btn_add_provider.setToolTip("เพิ่ม provider ใหม่ (ถามชื่อ)")
         btn_add_provider.clicked.connect(self.add_provider)
         btn_add_model = QPushButton("+ Model")
+        btn_add_model.setToolTip("เพิ่ม model ใหม่ใน provider ที่เลือก (ถาม key)")
         btn_add_model.clicked.connect(self.add_model)
-        btn_del = QPushButton("ลบ")
+        btn_del = QPushButton("ลบรายการ")
+        btn_del.setToolTip("ลบ provider หรือ model ที่เลือกอยู่ (ถามยืนยันก่อน)")
         btn_del.clicked.connect(self.delete_selected)
-        btns.addWidget(btn_add_provider)
-        btns.addWidget(btn_add_model)
-        btns.addWidget(btn_del)
-        left.addLayout(btns)
+        for b in (btn_add_provider, btn_add_model, btn_del):
+            b.setMinimumHeight(30)
+            btns1.addWidget(b)
+        left.addLayout(btns1)
+
+        # Row 2: copy / paste model
+        btns2 = QHBoxLayout()
+        btn_copy = QPushButton("คัดลอก model")
+        btn_copy.setToolTip("คัดลอก model ที่เลือก (ค่า limit/cost/options ทั้งหมด)")
+        btn_copy.clicked.connect(self.copy_model)
+        btn_paste = QPushButton("วาง model")
+        btn_paste.setToolTip("วาง model ที่คัดลอกไว้ลง provider ที่เลือก (ถาม key ใหม่)")
+        btn_paste.clicked.connect(self.paste_model)
+        for b in (btn_copy, btn_paste):
+            b.setMinimumHeight(30)
+            btns2.addWidget(b)
+        left.addLayout(btns2)
+
+        # Row 3: view + batch tools
+        btns3 = QHBoxLayout()
+        btn_expand = QPushButton("ขยายทั้งหมด")
+        btn_expand.setToolTip("ขยาย tree ให้เห็นทุก model")
+        btn_expand.clicked.connect(self.tree.expandAll)
+        btn_collapse = QPushButton("ย่อทั้งหมด")
+        btn_collapse.setToolTip("ย่อ tree เหลือแค่ provider")
+        btn_collapse.clicked.connect(self.tree.collapseAll)
+        btn_batch = QPushButton("แก้ทีละหลายตัว")
+        btn_batch.setToolTip("ตั้งค่า limit/cost พร้อมกันทุก model ใน provider ที่เลือก")
+        btn_batch.clicked.connect(self.batch_edit)
+        for b in (btn_expand, btn_collapse, btn_batch):
+            b.setMinimumHeight(30)
+            btns3.addWidget(b)
+        left.addLayout(btns3)
 
         left_widget = QWidget()
         left_widget.setLayout(left)
-        left_widget.setMaximumWidth(320)
+        left_widget.setMaximumWidth(380)
 
         # Right: stacked forms
         self.stack = QStackedWidget()
@@ -238,13 +320,14 @@ class ProviderPanel(QWidget):
         self._orig_cost = {}
         self._cost_edited = set()
 
-        for pname, pdata in self.config.providers.items():
+        for pname in sorted(self.config.providers.keys()):
+            pdata = self.config.providers[pname]
             pitem = QTreeWidgetItem([pname])
             pitem.setData(0, Qt.UserRole, ("provider", pname))
             self.tree.addTopLevelItem(pitem)
             models = pdata.get("models") if isinstance(pdata, dict) else None
             if isinstance(models, dict):
-                for mkey in models.keys():
+                for mkey in sorted(models.keys()):
                     mitem = QTreeWidgetItem([mkey])
                     mitem.setData(0, Qt.UserRole, ("model", pname, mkey))
                     pitem.addChild(mitem)
@@ -619,6 +702,136 @@ class ProviderPanel(QWidget):
         if cost: found.append("cost")
         found.append("ความจุ")
         QMessageBox.information(self, "ดึงค่าอัตโนมัติ", f"เติมแล้วจาก models.dev (ต่อไปนี้: {', '.join(found)})")
+
+    def _sync_model_order(self, pname: str) -> None:
+        """Rebuild the provider's models dict to match the new tree order after drag-drop."""
+        for i in range(self.tree.topLevelItemCount()):
+            pitem = self.tree.topLevelItem(i)
+            if pitem.text(0) != pname:
+                continue
+            old = self.config.provider(pname).get("models", {})
+            if not isinstance(old, dict):
+                return
+            new: dict[str, Any] = {}
+            for j in range(pitem.childCount()):
+                mitem = pitem.child(j)
+                mkey = mitem.text(0)
+                if mkey in old:
+                    new[mkey] = old[mkey]
+                else:
+                    new[mkey] = {}
+            # preserve any models not shown in tree (should not happen)
+            for k, v in old.items():
+                if k not in new:
+                    new[k] = v
+            self.config.provider(pname)["models"] = new
+            self._mark_changed()
+            return
+
+    def copy_model(self) -> None:
+        """Copy the selected model (deep copy) into the internal clipboard."""
+        if not self._selected_model or not self._selected_provider:
+            QMessageBox.information(self, "คัดลอก", "เลือก model ก่อน")
+            return
+        import copy as _copy
+
+        m = self.config.provider(self._selected_provider).get("models", {}).get(self._selected_model)
+        if not isinstance(m, dict):
+            QMessageBox.information(self, "คัดลอก", "model ไม่มีข้อมูล")
+            return
+        self._clipboard_model = _copy.deepcopy(m)
+        self._status(f"คัดลอก model '{self._selected_model}' แล้ว")
+
+    def paste_model(self) -> None:
+        """Paste the copied model into the currently selected provider (or new key)."""
+        if self._clipboard_model is None:
+            QMessageBox.information(self, "วาง", "ยังไม่มี model ในคลิปบอร์ด (กด 'คัดลอก' ก่อน)")
+            return
+        from PySide6.QtWidgets import QInputDialog
+
+        pname = self._selected_provider
+        if not pname:
+            QMessageBox.information(self, "วาง", "เลือก provider ปลายทางก่อน")
+            return
+        mkey, ok = QInputDialog.getText(
+            self, "วาง Model", f"model key ใหม่ (ใต้ {pname}):",
+            text=self._selected_model or "copy",
+        )
+        if not ok or not mkey.strip():
+            return
+        mkey = mkey.strip()
+        import copy as _copy
+
+        p = self.config.add_provider(pname)
+        p.setdefault("models", {})[mkey] = _copy.deepcopy(self._clipboard_model)
+        self._populate()
+        self._find_and_select_model(pname, mkey)
+        self._mark_changed()
+        self._status(f"วาง model '{mkey}' แล้ว")
+
+    def batch_edit(self) -> None:
+        """Apply a field value to all models of a provider at once."""
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QComboBox as _QC, QSpinBox as _QS,
+            QDoubleSpinBox as _QDS, QLabel as _QL, QVBoxLayout as _QVL,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("แก้หลาย model พร้อมกัน")
+        lay = _QVL(dlg)
+
+        lay.addWidget(_QL("Provider:"))
+        prov_sel = _QC()
+        prov_sel.addItems(sorted(self.config.providers.keys()))
+        lay.addWidget(prov_sel)
+
+        lay.addWidget(_QL("Field:"))
+        field_sel = _QC()
+        field_sel.addItems(["limit.context", "limit.output", "cost.input",
+                            "cost.output", "cost.cache_read", "cost.cache_write"])
+        lay.addWidget(field_sel)
+
+        lay.addWidget(_QL("ค่า (0 = ลบ field นั้น):"))
+        val_spin = _QDS()
+        val_spin.setRange(0, 10_000_000)
+        val_spin.setDecimals(4)
+        lay.addWidget(val_spin)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+        pname = prov_sel.currentText()
+        field = field_sel.currentText()
+        value = val_spin.value()
+        section, key = field.split(".")
+
+        changed = 0
+        models = self.config.provider(pname).get("models", {})
+        for m in models.values():
+            if not isinstance(m, dict):
+                continue
+            if value == 0:
+                target = m.get(section)
+                if isinstance(target, dict):
+                    target.pop(key, None)
+                changed += 1
+            else:
+                target = m.setdefault(section, {})
+                if isinstance(target, dict):
+                    target[key] = value
+                    changed += 1
+        self._populate()
+        self._mark_changed()
+        QMessageBox.information(self, "แก้หลายตัว", f"อัปเดต {changed} model ใน '{pname}'")
+
+    def _status(self, msg: str) -> None:
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_status"):
+            parent._status(msg)
 
     def _mark_changed(self) -> None:
         self.data_changed.emit()

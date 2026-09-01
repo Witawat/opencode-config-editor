@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('assets/opencode.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

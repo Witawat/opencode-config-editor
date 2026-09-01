@@ -5,6 +5,7 @@ Run with:  .venv\\Scripts\\python.exe test_roundtrip.py
 from __future__ import annotations
 
 import copy
+import json
 import os
 import unittest
 
@@ -74,7 +75,9 @@ class TestProviderRoundTrip(unittest.TestCase):
                             "limit": {"context": 1000000, "output": 65536},
                             "cost": {"input": 0, "output": 0, "cache_read": 0},
                             "unknown_future_key": {"keep": "me"},
-                        }
+                        },
+                        "m2": {"name": "second"},
+                        "m3": {"name": "third"},
                     },
                 }
             }
@@ -128,6 +131,26 @@ class TestProviderRoundTrip(unittest.TestCase):
         m = self.cfg.provider("demo")["models"]["m1"]
         self.assertEqual(m["future_key2"], {"a": 2})
         self.assertEqual(m["interleaved"], {"field": "reasoning_content"})
+
+    def test_model_reorder_sync(self):
+        """_sync_model_order rebuilds models dict in tree order."""
+        # Initial order: m1, m2, m3
+        tree = self.panel.tree
+        pitem = tree.topLevelItem(0)
+        self.assertEqual(pitem.childCount(), 3)
+        # Simulate swapping m2 and m3 in the tree
+        c2 = pitem.takeChild(1)  # remove m2
+        pitem.insertChild(2, c2)  # insert at position 2 (after m3)
+        self.assertEqual(pitem.child(0).text(0), "m1")
+        self.assertEqual(pitem.child(1).text(0), "m3")
+        self.assertEqual(pitem.child(2).text(0), "m2")
+        # Sync
+        self.panel._sync_model_order("demo")
+        keys = list(self.cfg.provider("demo")["models"].keys())
+        self.assertEqual(keys, ["m1", "m3", "m2"])
+        # Values preserved
+        self.assertEqual(self.cfg.provider("demo")["models"]["m1"]["id"], "m1")
+        self.assertEqual(self.cfg.provider("demo")["models"]["m3"]["name"], "third")
 
     def test_options_unknown_keys_kept_on_provider(self):
         self.panel._find_and_select_provider("demo")
@@ -417,6 +440,73 @@ def _patch_request_exception():
         raise rq.ConnectionError("test network off")
 
     return mock.patch("app.model_registry.requests.get", side_effect=_boom)
+
+
+class TestNewFeatures(unittest.TestCase):
+    """Sort / copy-paste / undo-redo / offline schema cache."""
+
+    def setUp(self):
+        _app()
+        _patch_message_boxes()
+        self.cfg = ConfigModel(data={
+            "provider": {
+                "zeta": {"models": {"b-model": {}, "a-model": {"name": "A"}}},
+                "alpha": {"models": {"m1": {"name": "M1"}}},
+            }
+        })
+        self.panel = ProviderPanel(self.cfg)
+
+    def test_populate_sorted(self):
+        top = [self.panel.tree.topLevelItem(i).text(0) for i in range(self.panel.tree.topLevelItemCount())]
+        self.assertEqual(top, ["alpha", "zeta"])  # sorted alphabetically
+        zeta = self.panel.tree.topLevelItem(1)
+        children = [zeta.child(j).text(0) for j in range(zeta.childCount())]
+        self.assertEqual(children, ["a-model", "b-model"])
+
+    def test_copy_paste_model(self):
+        self.panel._find_and_select_model("alpha", "m1")
+        self.panel.stack.setCurrentIndex(1)
+        self.panel.copy_model()
+        self.assertIsNotNone(self.panel._clipboard_model)
+        # paste into zeta
+        self.panel._find_and_select_provider("zeta")
+        self.panel._selected_model = None
+        self.panel.paste_model()  # QInputDialog patched -> cancelled, no crash
+        # verify clipboard preserved source
+        self.assertEqual(self.panel._clipboard_model.get("name"), "M1")
+
+    def test_undo_redo(self):
+        from app.main_window import MainWindow
+
+        win = MainWindow(self.cfg)  # pushes baseline snapshot
+        self.cfg.data["provider"]["alpha"]["models"]["m1"]["name"] = "CHANGED"
+        win._on_data_changed()  # push changed state
+        self.assertEqual(self.cfg.data["provider"]["alpha"]["models"]["m1"]["name"], "CHANGED")
+        win.undo()
+        self.assertEqual(self.cfg.data["provider"]["alpha"]["models"]["m1"]["name"], "M1")
+        win.redo()
+        self.assertEqual(self.cfg.data["provider"]["alpha"]["models"]["m1"]["name"], "CHANGED")
+        win.close()
+
+    def test_offline_schema_cache(self):
+        from app.config_model import ConfigModel as CM
+
+        # write a fake cache file at the real cache path
+        cache = CM._schema_cache_path()
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump({"type": "object"}, fh)
+        # network fails -> fallback to cache
+        from unittest import mock
+        import requests as rq
+
+        def _boom(url, **kw):
+            raise rq.ConnectionError("offline")
+
+        with mock.patch("app.config_model.requests.get", side_effect=_boom):
+            result = CM.fetch_schema(timeout=1)
+        self.assertEqual(result, {"type": "object"})
+        os.remove(cache)
 
 
 class TestMaskSecrets(unittest.TestCase):

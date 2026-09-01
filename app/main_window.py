@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -30,7 +31,7 @@ from .global_panel import GlobalPanel
 from .styles import (
     apply_theme,
     current_font_size,
-    current_theme,
+    effective_theme,
     load_recent,
     remember,
     settings,
@@ -48,20 +49,24 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.setWindowTitle("opencode.json Editor")
-        self.setWindowIcon(QIcon("assets/opencode.ico"))
+        self.setWindowIcon(QIcon(self._icon_path()))
         self.resize(1280, 780)
 
         self._schema = None  # type: ignore
         self._dirty = False
-        self._theme = current_theme()
+        self._theme = effective_theme()
         self._font_size = current_font_size()
         self._recent = load_recent()
+        self._undo_stack: list[dict] = []
+        self._redo_stack: list[dict] = []
+        self._last_snapshot: dict | None = None
 
         self._build_toolbar()
         self._build_body()
         self._build_shortcuts()
         self._restore_ui_state()
         self._apply_ui_settings()
+        self._snapshot()  # baseline for undo
         self._status("พร้อม")
 
     # ---- UI construction -------------------------------------------------
@@ -71,38 +76,63 @@ class MainWindow(QMainWindow):
         bar.setMovable(False)
         self.addToolBar(bar)
 
-        for text, slot in [("เปิด", self.open_file), ("บันทึก", self.save),
-                           ("โหลดซ้ำ", self.reload), ("บันทึกเป็น...", self.save_as)]:
+        toolbar_actions = [
+            ("เปิด", self.open_file, "เปิดไฟล์ opencode.json (Ctrl+O)"),
+            ("บันทึก", self.save, "บันทึกการแก้ไขทั้งหมดลงไฟล์ (Ctrl+S)"),
+            ("โหลดซ้ำ", self.reload, "โหลดไฟล์จากดิสก์ใหม่ ทิ้งการแก้ (F5)"),
+            ("บันทึกเป็น...", self.save_as, "บันทึกเป็นไฟล์ใหม่ (Ctrl+Shift+S)"),
+        ]
+        for text, slot, tip in toolbar_actions:
             act = QAction(text, self)
+            act.setToolTip(tip)
             act.triggered.connect(slot)
             bar.addAction(act)
 
         bar.addSeparator()
+        act_undo = QAction("ย้อนกลับ", self)
+        act_undo.setToolTip("ย้อนกลับการแก้ไขล่าสุด (Ctrl+Z)")
+        act_undo.triggered.connect(self.undo)
+        bar.addAction(act_undo)
+        act_redo = QAction("ทำซ้ำ", self)
+        act_redo.setToolTip("ทำซ้ำการแก้ไขที่ย้อนไป (Ctrl+Y)")
+        act_redo.triggered.connect(self.redo)
+        bar.addAction(act_redo)
+        bar.addSeparator()
 
         self.path_label = QLabel(self.config.path)
         self.path_label.setStyleSheet("color:#888; padding-left:8px;")
+        self.path_label.setToolTip("ตำแหน่งไฟล์ config ที่เปิดอยู่")
         bar.addWidget(self.path_label)
 
         bar.addSeparator()
 
         act_validate = QAction("ตรวจ Schema", self)
+        act_validate.setToolTip("ตรวจสอบความถูกต้องกับ schema ทางการ (Ctrl+Shift+V)")
         act_validate.triggered.connect(self.validate)
         bar.addAction(act_validate)
 
         bar.addSeparator()
 
         act_copy = QAction("คัดลอก JSON", self)
+        act_copy.setToolTip("คัดลอก JSON ทั้งหมด (apiKey ถูกปกปิด) ไปคลิปบอร์ด (Ctrl+Shift+C)")
         act_copy.triggered.connect(self.copy_json)
         bar.addAction(act_copy)
+
+        act_diff = QAction("เทียบ diff", self)
+        act_diff.setToolTip("เปรียบเทียบ config ในหน่วยความจำกับไฟล์บนดิสก์")
+        act_diff.triggered.connect(self.show_diff)
+        bar.addAction(act_diff)
 
         bar.addSeparator()
 
         # theme + font size controls (applied globally, persisted in QSettings)
-        act_theme = QAction("ธีม (Dark/Light)", self)
+        act_theme = QAction("ธีม", self)
+        act_theme.setToolTip("สลับธีม: เข้ม -> สว่าง -> ตามระบบ (วนซ้ำ)")
         act_theme.triggered.connect(self.toggle_theme)
         bar.addAction(act_theme)
 
         font_label = QLabel(" ฟอนต์:")
+        font_label.setToolTip("ขนาดฟอนต์ทั้งแอป (จุด)")
         bar.addWidget(font_label)
         self.font_spin = QSpinBox()
         self.font_spin.setRange(8, 24)
@@ -156,6 +186,8 @@ class MainWindow(QMainWindow):
         self._add_shortcut("F5", self.reload)
         self._add_shortcut("Ctrl+Shift+V", self.validate)
         self._add_shortcut("Ctrl+Shift+C", self.copy_json)
+        self._add_shortcut("Ctrl+Z", self.undo)
+        self._add_shortcut("Ctrl+Y", self.redo)
 
     def _add_shortcut(self, seq: str, slot) -> None:
         act = QAction(self)
@@ -170,7 +202,18 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geo)
 
     def _apply_ui_settings(self) -> None:
-        apply_theme(QApplication.instance() or QApplication([]), self._theme, self._font_size)
+        theme = self._theme if self._theme in ("dark", "light") else effective_theme()
+        apply_theme(QApplication.instance() or QApplication([]), theme, self._font_size)
+
+    @staticmethod
+    def _icon_path() -> str:
+        """Resolve assets/opencode.ico for both dev and PyInstaller-bundled runs."""
+        try:
+            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+                return os.path.join(str(sys._MEIPASS), "assets", "opencode.ico")
+        except Exception:
+            pass
+        return "assets/opencode.ico"
 
     def set_font_size(self, size: int) -> None:
         self._font_size = size
@@ -178,8 +221,12 @@ class MainWindow(QMainWindow):
         self._status(f"ฟอนต์ {size}pt")
 
     def toggle_theme(self) -> None:
-        self._theme = "light" if self._theme == "dark" else "dark"
-        apply_theme(QApplication.instance() or QApplication([]), self._theme, self._font_size)
+        # cycle: dark -> light -> auto (follow system) -> dark ...
+        order = ["dark", "light", "auto"]
+        idx = order.index(self._theme) if self._theme in order else 0
+        self._theme = order[(idx + 1) % len(order)]
+        settings().setValue("ui/theme", self._theme)
+        self._apply_ui_settings()
         self._status(f"ธีม: {self._theme}")
 
     def _build_body(self) -> None:
@@ -310,6 +357,33 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(json.dumps(masked, indent=2, ensure_ascii=False))
         self._status("คัดลอก JSON (apiKey ถูกปกปิด) ไปยังคลิปบอร์ดแล้ว")
 
+    def show_diff(self) -> None:
+        """Compare the current (committed) config against the file on disk."""
+        self._commit_all()
+        import difflib
+
+        current = json.dumps(mask_secrets(self.config.data), indent=2, ensure_ascii=False).splitlines()
+        try:
+            with open(self.config.path, "r", encoding="utf-8") as fh:
+                saved = json.load(fh)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "เทียบ diff", f"อ่านไฟล์ที่บันทึกไม่สำเร็จ:\n{exc}")
+            return
+        saved = json.dumps(mask_secrets(saved), indent=2, ensure_ascii=False).splitlines()
+        diff = list(difflib.unified_diff(saved, current, "บนดิสก์", "ในหน่วยความจำ", lineterm=""))
+        if not diff:
+            QMessageBox.information(self, "เทียบ diff", "ไม่มีความต่าง — ตรงกับไฟล์บนดิสก์")
+            return
+        text = "\n".join(diff[:400])
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle(f"diff ({len(diff)} บรรทัด)")
+        dlg.setText(text)
+        dlg.setDetailedText(text)
+        dlg.setStandardButtons(QMessageBox.Ok)
+        dlg.setMinimumWidth(700)
+        dlg.exec()
+        self._status(f"diff: ต่าง {len(diff)} บรรทัดจากไฟล์บนดิสก์")
+
     def validate(self) -> None:
         self._commit_all()
         schema = self._get_schema()
@@ -341,9 +415,60 @@ class MainWindow(QMainWindow):
             self._schema = ConfigModel.fetch_schema()
         return self._schema
 
+    # ---- undo / redo ------------------------------------------------------
+
+    def _snapshot(self) -> None:
+        """Push the state BEFORE the current change onto the undo stack."""
+        import copy as _copy
+
+        if self._last_snapshot is not None:
+            self._undo_stack.append(self._last_snapshot)
+            if len(self._undo_stack) > 50:
+                self._undo_stack.pop(0)
+        self._last_snapshot = _copy.deepcopy(self.config.data)
+        self._redo_stack.clear()
+
+    def undo(self) -> None:
+        if not self._undo_stack:
+            self._status("ไม่มีประวัติให้ย้อนกลับ")
+            return
+        import copy as _copy
+
+        self._redo_stack.append(self._last_snapshot)
+        self.config.data = self._undo_stack.pop()
+        self._last_snapshot = _copy.deepcopy(self.config.data)
+        self._dirty = True
+        self._update_title()
+        self._reload_panels()
+        self._status("ย้อนกลับแล้ว")
+
+    def redo(self) -> None:
+        if not self._redo_stack:
+            self._status("ไม่มีประวัติให้ทำซ้ำ")
+            return
+        import copy as _copy
+
+        self._undo_stack.append(self._last_snapshot)
+        self.config.data = self._redo_stack.pop()
+        self._last_snapshot = _copy.deepcopy(self.config.data)
+        self._dirty = True
+        self._update_title()
+        self._reload_panels()
+        self._status("ทำซ้ำแล้ว")
+
+    def _reload_panels(self) -> None:
+        self.nav.set_config(self.config)
+        self.mcp_tab.set_config(self.config)
+        self.agent_tab.set_config(self.config)
+        self.skill_tab.set_config(self.config)
+        self.perm_tab.set_config(self.config)
+        self.global_tab.set_config(self.config)
+        self.preview.refresh()
+
     # ---- dirty tracking --------------------------------------------------
 
     def _on_data_changed(self) -> None:
+        self._snapshot()
         self._dirty = True
         self._update_title()
         self._status("มีการเปลี่ยนแปลง (ยังไม่บันทึก)")

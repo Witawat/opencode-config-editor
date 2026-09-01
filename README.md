@@ -14,7 +14,9 @@ GUI สำหรับเปิด-แก้ไข `opencode.json` (ของ op
 - **ทดสอบ API** — ยิง `GET {baseURL}/models` + เสนอเติม whitelist; ดึง whitelist จาก registry ได้
 - **ตรวจ Schema** — validate กับ `https://opencode.ai/config.json` แยก known-issue (env/environment, custom provider) ออกจาก error จริง
 - **JSON Preview** — ดู config เป็น JSON สด (mask apiKey/headers เป็น `***`) + ปุ่มคัดลอก JSON
-- **UI polish** — dark/light theme, ฟอนต์ปรับได้ 8–24pt (จำค่า QSettings), dirty marker `*`, recent files, คีย์ลัด, icon opencode
+- **UI polish** — dark/light/auto theme, ฟอนต์ปรับได้ 8–24pt (จำค่า QSettings), dirty marker `*`, recent files, คีย์ลัด, icon opencode
+- **จัดการ model** — drag-drop เรียงลำดับ, sort อัตโนมัติ, copy/paste model, batch edit cost/limit
+- **Undo/Redo** (Ctrl+Z/Y) + ปุ่ม "เทียบ diff" กับไฟล์บนดิสก์ + offline schema cache
 
 ## วิธีรัน
 

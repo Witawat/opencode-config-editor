@@ -37,8 +37,12 @@ provider/model/ราคา/context/mcp/agent/skill/permission/global ได้�
 - [x] **schema validate:** แยก known-issue (4 ข้อจริงเป็น benign ทั้งหมด) + retry schema
 - [x] **Phase 5:** `build.bat` + `opencode_editor.spec` + `assets/opencode.ico`
   → `dist\opencode-config-editor.exe` (48.5 MB, onefile+windowed, เปิดรอด)
-- [x] **test suite:** `test_roundtrip.py` 38 cases + `test_functional.py` e2e 20 checks
+- [x] **test suite:** `test_roundtrip.py` 43 cases + `test_functional.py` e2e 20 checks
   + `test_smoke.py` — ผ่านทั้งหมด
+- [x] **UX เพิ่ม:** drag-drop reorder model (ภายใน provider), sort provider/model,
+  copy/paste model, batch edit cost/limit, offline schema cache,
+  theme auto-follow system (dark/light/auto), undo/redo (Ctrl+Z/Y),
+  ปุ่ม collapse/expand tree, ปุ่ม "เทียบ diff"
 
 ## Active / งานต่อยอด
 - [ ] (optional) ตรวจ `.exe` บนเครื่องสะอาด / NSSM / shell:startup
