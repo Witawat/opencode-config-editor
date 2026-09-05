@@ -19,7 +19,7 @@ provider/model/ราคา/context/mcp/agent/skill/permission/global ได้�
 - **test กับ copy เสมอ**: ห้ามชี้ test ไป opencode.json จริง (มี apiKey)
 - **รันเทสด้วย `-X utf8`** — console cp874 ขึ้น Thai ไม่ได้
 
-## Completed (commit ล่าสุด: dbc6f5d — งาน Phase 4+ ยังไม่ commit)
+## Completed (commit ล่าสุด: 7066fc7 · version: 0.4.0 · release: v0.4.0 สร้างแล้ว 05/09/2026)
 - [x] init repo + commit ทั้งโค้ด+เอกสาร (22 files, 1711 insertions) — 7a87168
 - [x] data layer load/save/validate (config_model.py)
 - [x] provider/model editor + mcp editor + main window + run.bat + test_smoke.py
