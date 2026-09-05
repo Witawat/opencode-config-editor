@@ -125,3 +125,120 @@ def check_mcp_command(command: list[str]) -> dict[str, Any]:
     if shutil.which(head):
         return {"ok": True, "message": f"พบ executable: {shutil.which(head)}"}
     return {"ok": False, "message": f"ไม่พบ '{head}' ใน PATH"}
+
+
+def reasoning_effort_options(provider_name: str, model_key: str) -> list[str]:
+    """Return the reasoning_effort values the registry lists for a model.
+
+    Reads reasoning_options[].values from models.dev (e.g. ['low','high','max']).
+    Empty list means unknown -- caller should fall back to the broad set.
+    """
+    info = find_model_info(provider_name, model_key)
+    if not info:
+        return []
+    ropts = info.get("reasoning_options")
+    if not isinstance(ropts, list):
+        return []
+    values: list[str] = []
+    for r in ropts:
+        if isinstance(r, dict) and r.get("type") == "effort":
+            vals = r.get("values")
+            if isinstance(vals, list):
+                values.extend(str(v) for v in vals if v)
+    return values
+
+
+def derive_options(info: dict[str, Any]) -> dict[str, Any]:
+    """Derive a correct model "options" dict from registry fields.
+
+    maps models.dev fields to opencode model options:
+      - attachment / modalities.input contains image -> options.image
+      - reasoning_options effort values -> options.reasoning_effort (first non-'')
+      - interleaved stays in options so tool_call reasoning works
+    Only keys with confident values are returned.
+    """
+    out: dict[str, Any] = {}
+    # image support: "attachment" bool or modalities.input includes "image"
+    if info.get("attachment") is True:
+        out["image"] = True
+    else:
+        mods = info.get("modalities") or {}
+        inputs = mods.get("input") if isinstance(mods, dict) else None
+        if isinstance(inputs, list) and any("image" in str(i) for i in inputs):
+            out["image"] = True
+    # reasoning effort
+    ropts = info.get("reasoning_options")
+    if isinstance(ropts, list) and ropts:
+        effort = None
+        for r in ropts:
+            if isinstance(r, dict) and r.get("type") == "effort":
+                vals = r.get("values")
+                if isinstance(vals, list) and vals:
+                    effort = vals[0]
+                    break
+        if effort:
+            out["reasoning_effort"] = effort
+    # interleaved (reasoning stream field)
+    if isinstance(info.get("interleaved"), dict):
+        out["interleaved"] = info["interleaved"]
+    return out
+
+
+def test_model_api(base_url: str, api_key: str, model_id: str, timeout: int = 15) -> dict[str, Any]:
+    """Test that a model is usable against an OpenAI-compatible endpoint.
+
+    Step 1: GET {baseURL}/models — is the id listed? (cheap, no tokens used)
+    Step 2 (if listed): POST /chat/completions with a one-word prompt to
+    confirm it actually generates. This spends a tiny amount of tokens.
+    Returns {ok, message, ...}.
+    """
+    base = base_url.rstrip("/")
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers["Content-Type"] = "application/json"
+
+    # Step 1: list check
+    try:
+        resp = requests.get(base + "/models", headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        return {"ok": False, "message": f"เชื่อมต่อไม่สำเร็จ: {exc.__class__.__name__}"}
+    listed = None
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+            ids = [m.get("id") for m in (data.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            listed = any(i == model_id for i in ids)
+        except (ValueError, AttributeError):
+            listed = None
+    elif resp.status_code in (401, 403):
+        return {"ok": False, "message": f"API key ถูกปฏิเสธ (HTTP {resp.status_code}) — เช็ค apiKey"}
+    elif resp.status_code >= 400:
+        return {"ok": False, "message": f"GET /models ล้มเหลว HTTP {resp.status_code}"}
+
+    # Step 2: real completion test
+    payload = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 5,
+        "stream": False,
+    }
+    try:
+        resp2 = requests.post(base + "/chat/completions", headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        return {"ok": False, "message": f"เรียก /chat/completions ไม่สำเร็จ: {exc.__class__.__name__}"}
+    if resp2.status_code == 200:
+        msg = f"model '{model_id}' ใช้ได้ (ตอบกลับสำเร็จ)"
+        if listed is False:
+            msg += " — หมายเหตุ: id ไม่อยู่ใน /models แต่ API ตอบได้"
+        return {"ok": True, "message": msg}
+    if resp2.status_code in (401, 403):
+        return {"ok": False, "message": f"model ถูกปฏิเสธ (HTTP {resp2.status_code}) — ตรวจ apiKey / สิทธิ์ model"}
+    if resp2.status_code == 404:
+        return {"ok": False, "message": f"model '{model_id}' ไม่รู้จัก (HTTP 404) — id ผิดหรือ provider ไม่มี"}
+    body = ""
+    try:
+        body = resp2.json().get("error", {}).get("message", "")[:200]
+    except (ValueError, AttributeError):
+        body = resp2.text[:120]
+    return {"ok": False, "message": f"model ล้มเหลว HTTP {resp2.status_code}: {body}"}

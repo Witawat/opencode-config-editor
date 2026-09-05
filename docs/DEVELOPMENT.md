@@ -35,13 +35,13 @@ $env:QT_QPA_PLATFORM="offscreen"
 ## เทส (3 ชุด)
 
 ```powershell
-.venv\Scripts\python.exe test_roundtrip.py     # unit test (38 cases)
+.venv\Scripts\python.exe test_roundtrip.py     # unit test (64 cases)
 .venv\Scripts\python.exe test_functional.py <copy-config>   # e2e ขับ GUI จริง
 .venv\Scripts\python.exe test_smoke.py <copy-config>        # smoke round-trip
 ```
 
 - **`test_roundtrip.py`** — unit test ตัว data layer + panel ต่าง ๆ: `parse_money`, `schema_errors` format, มัก merge กัน data loss (`interleaved`), cost=0, mcp `shlex`, env preserve, agent/skill/permission/global round-trip, `mask_secrets`
-- **`test_functional.py`** — จับ real widgets: เลือก provider → เพิ่ม model → แก้ agent/skill/permission/global → save → reload → ตรวจค่า (ต้องส่ง path ของไฟล์ **copy**) ครอบดันรายงาน e2e 20 checks
+- **`test_functional.py`** — จับ real widgets: เลือก provider → เพิ่ม model → แก้ agent/skill/permission/global → save → reload → ตรวจค่า (ต้องส่ง path ของไฟล์ **copy**) ครอบดันรายงาน e2e ALL CHECKS PASSED
 - **`test_smoke.py`** — build window offscreen + commit + save round-trip + เทียบคีย์ครบ
 
 > ⚠️ ทุกเทสที่ไม่ใช่ dry-run ใช้ copy ของ config เสมอ ห้ามชี้ไป `opencode.json` จริง (มี apiKey)

@@ -11,7 +11,7 @@ GUI สำหรับเปิด-แก้ไข `opencode.json` (ของ op
 - **Agent / Skill / Permission** — tabs เพิ่มตาม schema จริง (`agent` map, `skills.paths/urls`, `permission.[tool]` ask/allow/deny)
 - **Global** — `model`, `small_model`, `instructions`, `compaction`, `enabled_providers` (whitelist), `disabled_providers` (blacklist)
 - **ดึงค่าอัตโนมัติ** — ปุ่มเติม limit/cost/reasoning/tool_call จาก registry `models.dev` (`app/model_registry.py`)
-- **ทดสอบ API** — ยิง `GET {baseURL}/models` + เสนอเติม whitelist; ดึง whitelist จาก registry ได้
+- **ทดสอบ API / model / Probe ค่าจริง** — ทดสอบ `GET {baseURL}/models` + `POST /chat/completions`; Probe หา max_tokens, reasoning field (interleaved), reasoning_effort, tool_call, vision จาก API จริง (ใช้ได้ทุก OpenAI-compatible provider, `app/model_probe.py`) — รันใน QThread แสดงความคืบหน้า + ยกเลิกได้ (GUI ไม่ค้าง)
 - **ตรวจ Schema** — validate กับ `https://opencode.ai/config.json` แยก known-issue (env/environment, custom provider) ออกจาก error จริง
 - **JSON Preview** — ดู config เป็น JSON สด (mask apiKey/headers เป็น `***`) + ปุ่มคัดลอก JSON
 - **UI polish** — dark/light/auto theme, ฟอนต์ปรับได้ 8–24pt (จำค่า QSettings), dirty marker `*`, recent files, คีย์ลัด, icon opencode
@@ -40,7 +40,7 @@ build.bat --clean    # ลบ build/dist ก่อน
 ## เทส
 
 ```powershell
-.venv\Scripts\python.exe test_roundtrip.py    # unit test (38 cases)
+.venv\Scripts\python.exe test_roundtrip.py    # unit test (64 cases)
 .venv\Scripts\python.exe test_functional.py <copy-config>  # e2e ขับ GUI จริง
 .venv\Scripts\python.exe test_smoke.py <copy-config>       # smoke round-trip
 ```
@@ -58,9 +58,10 @@ app/misc_panels.py         # agent / skill / permission
 app/global_panel.py        # model/small_model/instructions/compaction/whitelist/blacklist
 app/preview_panel.py       # live JSON preview + mask secrets
 app/model_registry.py      # auto-fill จาก models.dev + ทดสอบ API
+app/model_probe.py         # Probe ค่าจริงจาก API (max_tokens/reasoning/effort/tool/vision)
 app/styles.py              # themes dark/light + QSS + QSettings
 test_smoke.py              # smoke test headless
-test_roundtrip.py          # unit test (38)
+test_roundtrip.py          # unit test (64)
 test_functional.py         # e2e test
 run.bat                    # double-click เปิดแอป
 build.bat                  # double-click บิลด์ exe

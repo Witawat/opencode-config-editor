@@ -71,6 +71,21 @@ Content-Type: application/json
 | `search_models(provider, pattern)` | รายการ model id ของ provider (สำหรับ whitelist) |
 | `test_provider_api(base_url, api_key)` | `GET {baseURL}/models` → `{ok, message, models?}` |
 | `check_mcp_command(command)` | ตรวจ executable ตัวแรกใน PATH |
+| `derive_options(info)` | แปลง registry → options ที่ถูกต้อง (image/reasoning_effort/interleaved) |
+| `reasoning_effort_options(provider, model_key)` | ดึงค่า reasoning_effort ที่ registry ระบุสำหรับ model (เผื่อ probe) |
+| `test_model_api(base_url, api_key, model_id)` | ทดสอบ model: GET /models + POST /chat/completions |
+
+### `model_probe` (Probe ค่าจริงจาก API)
+
+| method | หน้าที่ |
+|---|---|
+| `list_models(base_url, key)` | GET /models → ids |
+| `find_max_tokens(base_url, key, model, context)` | binary search ค่า max_tokens ที่ปลอดภัย (200/400) — error กลางทางไม่เลิกทั้ง search |
+| `detect_reasoning_field(base_url, key, model)` | stream ดู delta keys → interleaved field |
+| `test_reasoning_effort(base_url, key, model, effort_values=None)` | หาค่า effort ที่ใช้ได้ (รับชุดค่าจาก registry ได้; default = ชุดกว้าง none..auto) |
+| `test_tool_call(base_url, key, model)` | ส่ง tools + system prompt บังคับให้เรียก tool → finish_reason tool_calls? |
+| `test_image_support(base_url, key, model)` | ส่ง image_url (PNG data URL) → รองรับ vision? |
+| `probe_model(base_url, key, model, context, effort_values=None, progress_cb=None, cancel_check=None)` | รันครบ → `{max_tokens, reasoning_field, reasoning_effort, effort_values, tool_call, image_support, cancelled}` — `progress_cb(label)` รายงานขั้นตอน, `cancel_check()` หยุดเร็วได้ |
 
 ### `preview_panel` / `styles`
 

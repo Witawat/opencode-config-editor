@@ -57,4 +57,4 @@
 - [x] ไฟล์ `.md` ลิงก์กันครบ: `README` ⟷ `AGENTS` ⟷ `KNOWLEDGE_BASE` ⟷ `docs/*`
 - [x] ไม่มี stack หลง (Node/Java) — ตรวจ `grep -ri "node\|java"` เหลือแต่ "ห้ามใช้"
 - [x] Build/Deploy ปรับเป็น Python + PySide6
-- [x] เทส unit เก็บม้วนได้ (`test_roundtrip.py` 38 cases + `test_functional.py` e2e + smoke)
+- [x] เทส unit เก็บม้วนได้ (`test_roundtrip.py` 64 cases + `test_functional.py` e2e + smoke)

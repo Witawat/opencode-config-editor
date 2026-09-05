@@ -7,6 +7,26 @@
 ### Added
 - เอกสารชุดโปรเจกต์: `AGENTS.md`, `KNOWLEDGE_BASE.md`, `docs/*`, `PLAN.md`, รวมถึง `CHANGELOG.md`, `CONTRIBUTING.md`, `.gitignore`
 
+## [0.4.0] — 2026-09-05
+
+### Added
+- ปุ่ม **"Probe ค่าจริง"** (`app/model_probe.py`) — ทำงานกับทุก OpenAI-compatible endpoint (ไม่จำกัด provider):
+  หา `max_tokens` ที่ปลอดภัย (binary search), หา reasoning field (interleaved),
+  ทดสอบ `reasoning_effort` (ค่าจาก models.dev registry + fallback ชุดกว้าง `none..auto`),
+  ทดสอบ `tool_call`, ทดสอบ vision (`image_url`)
+- `reasoning_effort_options(provider, model)` — ดึงค่าที่ registry ระบุ → probe ลองเฉพาะค่านั้น (ประหยัด request)
+- Probe อัปเดตช่อง JSON ทั้งสองเอง: `options` (reasoning_effort + image) และ `extra keys` (interleaved) + **ลบค่าค้าง** เมื่อ probe บอกว่าไม่รองรับ
+- Probe รันใน **QThread + QProgressDialog** — แสดงขั้นตอนสด ("หา max_tokens...", "ทดสอบ tool_call...") + ปุ่มยกเลิก → **GUI ไม่ค้าง**
+- ปุ่ม "ทดสอบ model" — `GET /models` + `POST /chat/completions`
+
+### Fixed
+- probe / test model อ่าน baseURL/apiKey จาก widget ที่ว่างเมื่ออยู่ model form → อ่านจาก config โดยตรง
+- `find_max_tokens`: timeout/error กลางทางไม่เลิกทั้ง binary search (ถือว่า "เกินไป" แล้วค้นต่อ); เงื่อนไขเช็ค `lo==0` (เดิม `lo==0 and hi==0`)
+- `test_tool_call`: เพิ่ม system prompt บังคับให้ model เรียก tool → ลด false negative
+- `reasoning_effort`: คืนค่าใช้ได้ทั้งหมด + UI แสดงตัวเลือก (default = ค่าต่ำสุด/ประหยัด)
+- socket leak: `stream=True` ที่ไม่อ่าน body → `r.close()` ทุกครั้ง
+- thread cleanup: `worker.deleteLater`
+
 ## [0.3.0] — 2026-08-29
 
 ### Added

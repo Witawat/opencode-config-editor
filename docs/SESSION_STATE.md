@@ -43,6 +43,28 @@ provider/model/ราคา/context/mcp/agent/skill/permission/global ได้�
   copy/paste model, batch edit cost/limit, offline schema cache,
   theme auto-follow system (dark/light/auto), undo/redo (Ctrl+Z/Y),
   ปุ่ม collapse/expand tree, ปุ่ม "เทียบ diff"
+- [x] **ทดสอบ model + probe ค่าจริง:** ปุ่ม "ทดสอบ model" (GET /models + /chat/completions)
+  + ปุ่ม "Probe ค่าจริง" (`app/model_probe.py`): binary search หา max_tokens ที่ปลอดภัย,
+  หา reasoning field (interleaved), หา reasoning_effort ที่ใช้ได้, เช็ค tool_call,
+  เช็ค vision (image_url) — ตามเทคนิค
+  `D:\MyCode\opencode\docs\NOTES_inferx_endpoint_probing_techniques.md` — 56 tests ผ่าน
+- [x] **reasoning_effort จาก registry:** `reasoning_effort_options(provider, model)`
+  อ่าน `reasoning_options[].values` จาก models.dev → probe ลองเฉพาะค่าที่ model ระบุ
+  (fallback ชุดกว้าง `none..auto`) — registry ชี้ตัวเลือก, probe จริงยืนยัน HTTP status
+- [x] **Probe อัปเดตช่อง JSON ทั้งสองเอง:** ผล probe เขียน `options` (reasoning_effort+image)
+  และ `extra keys` (interleaved) อัตโนมัติ + **ลบค่าค้าง** เมื่อ probe บอกว่าไม่รองรับ
+- [x] **fix บั๊ก probe/test model:** อ่าน baseURL/apiKey จาก config (ไม่ใช่ widget
+  `f_baseurl`/`f_apikey` ซึ่งว่างตอนอยู่ model form) — `probe_model_ui`/`test_model`
+- [x] **Probe ไม่ค้าง GUI:** probe รันใน QThread + QProgressDialog แสดงขั้นตอนสด
+  (หา max_tokens / reasoning / effort / tool_call / vision) + ปุ่มยกเลิก —
+  `probe_model` รับ `progress_cb`/`cancel_check` — 62 tests ผ่าน
+- [x] **fix bug ใน probe (ชุดตรวจหา bug):**
+  - `find_max_tokens`: timeout/error กลางทางไม่เลิกทั้ง search (ถือว่า "เกินไป" แล้วหาต่อ);
+    เงื่อนไขเช็ค `lo==0` (เดิม `lo==0 and hi==0` พลาดกรณี hi>0)
+  - `test_tool_call`: เพิ่ม system prompt บังคับให้ model เรียก tool — ลด false negative
+  - `reasoning_effort`: คืน `effort_values` ทั้งหมด + UI แสดงตัวเลือก (default = ค่าต่ำสุด/ประหยัด)
+  - socket leak: `stream=True` ที่ไม่อ่าน body → `r.close()` ทุกครั้ง (find_max_tokens/effort)
+  - thread cleanup: `worker.deleteLater` — 64 tests ผ่าน
 
 ## Active / งานต่อยอด
 - [ ] (optional) ตรวจ `.exe` บนเครื่องสะอาด / NSSM / shell:startup
@@ -52,18 +74,17 @@ provider/model/ราคา/context/mcp/agent/skill/permission/global ได้�
 - (ไม่มี)
 
 ## Next Move
-1. **commit งานทั้งหมดที่ค้าง** (Phase 4 + UI polish + build + schema fix + autofill + docs)
-2. (optional) ตรวจ `.exe` บนเครื่องสะอาดแล้วปล่อย release 0.2.0
+1. (เสร็จแล้ว) commit งาน probe + build exe + release v0.4.0
+2. (optional) ตรวจ `.exe` บนเครื่องสะอาด / แนวคิดต่อยอดจาก Active
 
 ## คำสั่งยืนยัน
 ```powershell
 cd D:\MyCode\opencode-config-editor
 run.bat                                    # เปิด GUI
 build.bat                                  # บิลด์ exe
-.venv\Scripts\python.exe test_roundtrip.py # unit test (38 PASS)
-.venv\Scripts\python.exe test_functional.py <copy-config>   # e2e (20 PASS)
+.venv\Scripts\python.exe test_roundtrip.py # unit test (64 PASS)
+.venv\Scripts\python.exe test_functional.py <copy-config>   # e2e (ALL PASS)
 .venv\Scripts\python.exe test_smoke.py <copy-config>        # smoke (PASS)
-git log --oneline -1                       # dbc6f5d (ก่อน commit ชุดใหญ่)
 ```
 
 ## เมื่อเริ่ม session ใหม่

@@ -30,8 +30,9 @@
 | `global_panel.py` | top-level: model/small_model/instructions/compaction/whitelist/blacklist |
 | `preview_panel.py` | live JSON + `mask_secrets()` (apiKey/headers → `***`) |
 | `model_registry.py` | ดึง models.dev + find/search model + `test_provider_api` + `check_mcp_command` |
+| `model_probe.py` | Probe ค่าจริงจาก API: max_tokens/reasoning field/reasoning_effort/tool_call/vision (generic ทุก OpenAI-compatible) |
 | `styles.py` | themes dark/light QSS + font size + QSettings (`remember()`/`load_recent()`) |
-| `test_roundtrip.py` | unit test (38) |
+| `test_roundtrip.py` | unit test (64) |
 | `test_functional.py` | e2e ขับ widgets จริง |
 
 ## 5. Config: รากฐานข้อมูล
@@ -72,8 +73,8 @@
 
 ## 9. เทส
 
-- `test_roundtrip.py` — 38 unit tests (parse_money, schema_errors format+shorten, merge กัน data loss, cost 0, shlex, env preserve, agent/skill/permission/global, mask_secrets, registry pure-logic)
-- `test_functional.py` — e2e ขับ widget จริง (20 checks)
+- `test_roundtrip.py` — 64 unit tests (parse_money, schema_errors format+shorten, merge กัน data loss, cost 0, shlex, env preserve, agent/skill/permission/global, mask_secrets, registry pure-logic, probe model + progress/cancel + tool_call force-prompt)
+- `test_functional.py` — e2e ขับ widget จริง (ALL CHECKS PASSED)
 - `test_smoke.py` — offscreen round-trip เทียบคีย์ครบ
 
 ## 10. Roadmap

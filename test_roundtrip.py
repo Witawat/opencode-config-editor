@@ -429,6 +429,283 @@ class TestModelRegistry(unittest.TestCase):
             res = model_registry.test_provider_api("http://127.0.0.1:1/", timeout=1)
         self.assertFalse(res["ok"])
 
+    def test_derive_options_image(self):
+        info = {"attachment": True, "reasoning": True}
+        opts = model_registry.derive_options(info)
+        self.assertEqual(opts.get("image"), True)
+
+    def test_derive_options_modalities(self):
+        info = {"modalities": {"input": ["text", "image"], "output": ["text"]}}
+        opts = model_registry.derive_options(info)
+        self.assertEqual(opts.get("image"), True)
+
+    def test_derive_options_reasoning_effort(self):
+        info = {"reasoning_options": [{"type": "effort", "values": ["low", "high"]}]}
+        opts = model_registry.derive_options(info)
+        self.assertEqual(opts.get("reasoning_effort"), "low")
+
+    def test_derive_options_interleaved(self):
+        info = {"interleaved": {"field": "reasoning_content"}}
+        opts = model_registry.derive_options(info)
+        self.assertEqual(opts.get("interleaved"), {"field": "reasoning_content"})
+
+    def test_test_model_api_listed_and_ok(self):
+        """model listed + completion 200 -> ok."""
+        from unittest import mock
+        import requests as rq
+
+        class _Resp:
+            def __init__(self, code, data=None, text=""):
+                self.status_code = code
+                self._data = data
+                self.text = text
+
+            def close(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        calls = {"n": 0}
+
+        def fake_get(url, **kw):
+            calls["n"] += 1
+            return _Resp(200, {"data": [{"id": "test/model"}, {"id": "other"}]})
+
+        def fake_post(url, **kw):
+            return _Resp(200, {"id": "x"})
+
+        with mock.patch("app.model_registry.requests.get", side_effect=fake_get), \
+             mock.patch("app.model_registry.requests.post", side_effect=fake_post):
+            res = model_registry.test_model_api("http://x", "k", "test/model", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertIn("ใช้ได้", res["message"])
+
+    def test_test_model_api_not_listed_404(self):
+        from unittest import mock
+
+        class _Resp:
+            def __init__(self, code, data=None, text=""):
+                self.status_code = code
+                self._data = data
+                self.text = text
+
+            def close(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        def fake_get(url, **kw):
+            return _Resp(200, {"data": [{"id": "other"}]})
+
+        def fake_post(url, **kw):
+            return _Resp(404, {"error": {"message": "unknown model"}})
+
+        with mock.patch("app.model_registry.requests.get", side_effect=fake_get), \
+             mock.patch("app.model_registry.requests.post", side_effect=fake_post):
+            res = model_registry.test_model_api("http://x", "k", "nope/m", timeout=1)
+        self.assertFalse(res["ok"])
+        self.assertIn("404", res["message"])
+
+    def test_find_max_tokens_binary_search(self):
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            def __init__(self, code, data=None, text=""):
+                self.status_code = code
+                self._data = data
+                self.text = text
+
+            def close(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        boundary = 100000  # 200 below, 400 at/above
+
+        def fake_post(url, **kw):
+            mt = kw.get("json", {}).get("max_tokens", 0)
+            code = 200 if mt < boundary else 400
+            return _Resp(code, {})
+
+        with mock.patch("app.model_probe.requests.post", side_effect=fake_post):
+            res = model_probe.find_max_tokens("http://x", "k", "m", context=200000, timeout=1)
+        self.assertTrue(res["ok"])
+        # binary search converges near (but strictly below) boundary
+        self.assertLess(res["max_tokens"], boundary)
+        self.assertGreaterEqual(res["max_tokens"], boundary - 300)
+
+    def test_detect_reasoning_field(self):
+        from app import model_probe
+        from unittest import mock
+
+        stream = (
+            'data: {"choices":[{"delta":{"reasoning":"thinking..."}}]}\n'
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+            'data: [DONE]\n'
+        ).encode()
+
+        class _StreamResp:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=True):
+                return (line.decode() if isinstance(line, bytes) else line
+                        for line in stream.splitlines())
+
+        with mock.patch("app.model_probe.requests.post", return_value=_StreamResp()):
+            res = model_probe.detect_reasoning_field("http://x", "k", "m", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["field"], "reasoning")
+
+    def test_reasoning_effort_only_low_medium(self):
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            def __init__(self, code, data=None, text=""):
+                self.status_code = code
+                self._data = data
+                self.text = text
+
+            def close(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        def fake_post(url, **kw):
+            eff = kw.get("json", {}).get("reasoning_effort")
+            code = 200 if eff in ("low", "medium") else 400
+            return _Resp(code, {})
+
+        with mock.patch("app.model_probe.requests.post", side_effect=fake_post):
+            res = model_probe.test_reasoning_effort("http://x", "k", "m", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["values"], ["low", "medium"])
+
+    def test_reasoning_effort_custom_values(self):
+        """effort_values given (from registry) -> only those are tested."""
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            def __init__(self, code, data=None, text=""):
+                self.status_code = code
+                self._data = data
+                self.text = text
+
+            def close(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        tested: list[str] = []
+
+        def fake_post(url, **kw):
+            eff = kw.get("json", {}).get("reasoning_effort")
+            tested.append(eff)
+            code = 200 if eff in ("low", "high") else 400
+            return _Resp(code, {})
+
+        with mock.patch("app.model_probe.requests.post", side_effect=fake_post):
+            res = model_probe.test_reasoning_effort("http://x", "k", "m", timeout=1,
+                                                    effort_values=("low", "high", "max"))
+        self.assertEqual(tested, ["low", "high", "max"])  # only given values
+        self.assertEqual(res["values"], ["low", "high"])
+
+    def test_reasoning_effort_options_from_registry(self):
+        """registry reasoning_options.effort.values -> effort candidates."""
+        model_registry.reset_cache()
+        model_registry._cache = {
+            "myprov": {
+                "models": {
+                    "m1": {
+                        "reasoning_options": [
+                            {"type": "effort", "values": ["low", "high", "max"]},
+                        ]
+                    }
+                }
+            }
+        }
+        vals = model_registry.reasoning_effort_options("myprov", "m1")
+        self.assertEqual(vals, ["low", "high", "max"])
+        # unknown model -> empty (caller falls back to broad set)
+        self.assertEqual(model_registry.reasoning_effort_options("myprov", "nope"), [])
+        model_registry.reset_cache()
+
+    def test_tool_call_supported(self):
+        from app import model_probe
+        from unittest import mock
+
+        stream = (
+            'data: {"choices":[{"delta":{"content":""}}]}\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n'
+            'data: [DONE]\n'
+        ).encode()
+
+        class _StreamResp:
+            status_code = 200
+
+            def iter_lines(self, decode_unicode=True):
+                return (line.decode() if isinstance(line, bytes) else line
+                        for line in stream.splitlines())
+
+        with mock.patch("app.model_probe.requests.post", return_value=_StreamResp()):
+            res = model_probe.test_tool_call("http://x", "k", "m", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["tool_call"])
+
+    def test_image_support_yes(self):
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"id": "x"}
+
+        with mock.patch("app.model_probe.requests.post", return_value=_Resp()):
+            res = model_probe.test_image_support("http://x", "k", "m", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["image"])
+
+    def test_image_support_no(self):
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            status_code = 400
+            text = ""
+
+            def json(self):
+                return {}
+
+        with mock.patch("app.model_probe.requests.post", return_value=_Resp()):
+            res = model_probe.test_image_support("http://x", "k", "m", timeout=1)
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["image"])
+
+    def test_image_support_other_error(self):
+        from app import model_probe
+        from unittest import mock
+
+        class _Resp:
+            status_code = 401
+            text = ""
+
+            def json(self):
+                return {}
+
+        with mock.patch("app.model_probe.requests.post", return_value=_Resp()):
+            res = model_probe.test_image_support("http://x", "k", "m", timeout=1)
+        self.assertFalse(res["ok"])
+
 
 def _patch_request_exception():
     """Force requests.get to raise so no real network is touched."""
@@ -507,6 +784,157 @@ class TestNewFeatures(unittest.TestCase):
             result = CM.fetch_schema(timeout=1)
         self.assertEqual(result, {"type": "object"})
         os.remove(cache)
+
+
+class TestProbeModelUi(unittest.TestCase):
+    """_probe_fill_form fills BOTH JSON boxes (options + extra) from probe results."""
+
+    def setUp(self):
+        _app()
+        _patch_message_boxes()
+        self.cfg = ConfigModel(data={
+            "provider": {
+                "inferx": {
+                    "options": {"baseURL": "https://model.inferx.net/endpoints/v1"},
+                    "models": {
+                        "qwen38-flash-next": {
+                            # stale values that probe should overwrite/remove
+                            "options": {"image": True, "reasoning_effort": "max", "stale_key": 1},
+                            "interleaved": {"field": "old_field"},
+                        }
+                    },
+                }
+            }
+        })
+        self.panel = ProviderPanel(self.cfg)
+        self.panel._find_and_select_model("inferx", "qwen38-flash-next")
+        self.panel.stack.setCurrentIndex(1)
+        self.panel._probe_meta = ("inferx", "qwen38-flash-next")
+
+    def _run_probe(self, fake_result):
+        self.panel._probe_fill_form(fake_result)
+
+    def test_fills_both_json_boxes(self):
+        fake = {
+            "ok": True, "message": "ok",
+            "max_tokens": 262000, "reasoning_field": "reasoning_content",
+            "reasoning_effort": "low", "tool_call": True, "image_support": True,
+        }
+        self._run_probe(fake)
+        import json as _json
+
+        opts = _json.loads(self.panel.m_options.toPlainText())
+        self.assertEqual(opts["reasoning_effort"], "low")
+        self.assertEqual(opts["image"], True)
+        self.assertEqual(opts["stale_key"], 1)  # existing non-probe keys kept
+        extra = _json.loads(self.panel.m_extra.toPlainText())
+        self.assertEqual(extra["interleaved"], {"field": "reasoning_content"})
+        self.assertEqual(self.panel.m_output.value(), 262000)
+        self.assertTrue(self.panel.m_tool_call.isChecked())
+        self.assertTrue(self.panel.m_reasoning.isChecked())
+
+    def test_removes_stale_when_not_supported(self):
+        fake = {
+            "ok": True, "message": "ok",
+            "max_tokens": None, "reasoning_field": None,
+            "reasoning_effort": None, "tool_call": False, "image_support": False,
+        }
+        self._run_probe(fake)
+        import json as _json
+
+        opts = _json.loads(self.panel.m_options.toPlainText())
+        self.assertNotIn("reasoning_effort", opts)  # stale removed
+        self.assertNotIn("image", opts)             # stale removed
+        self.assertEqual(opts["stale_key"], 1)      # unrelated kept
+        extra = self.panel.m_extra.toPlainText().strip()
+        self.assertEqual(extra, "")                 # stale interleaved removed
+        self.assertFalse(self.panel.m_tool_call.isChecked())
+
+
+class TestProbeModelCallbacks(unittest.TestCase):
+    """probe_model() reports steps via progress_cb and aborts via cancel_check."""
+
+    def _fake_resp(self, code=200):
+        from unittest import mock
+
+        resp = mock.Mock()
+        resp.status_code = code
+        resp.json.return_value = {"data": [{"id": "m"}]}
+        resp.iter_lines.return_value = []
+        return resp
+
+    def test_progress_reports_each_step(self):
+        from unittest import mock
+        from app import model_probe
+
+        steps: list[str] = []
+        with mock.patch("app.model_probe.requests.post", return_value=self._fake_resp()), \
+             mock.patch("app.model_probe.requests.get", return_value=self._fake_resp()):
+            res = model_probe.probe_model(
+                "http://127.0.0.1:9/", "", "m", context=100000,
+                progress_cb=steps.append,
+            )
+        self.assertTrue(res["ok"])
+        joined = "\n".join(steps)
+        self.assertIn("หา max_tokens", joined)
+        self.assertIn("reasoning field", joined)
+        self.assertIn("reasoning_effort", joined)
+        self.assertIn("tool_call", joined)
+        self.assertIn("vision", joined)
+        self.assertGreaterEqual(len(steps), 5)
+
+    def test_cancel_aborts_early(self):
+        from unittest import mock
+        from app import model_probe
+
+        with mock.patch("app.model_probe.requests.post", return_value=self._fake_resp()):
+            res = model_probe.probe_model(
+                "http://127.0.0.1:9/", "", "m", context=100000,
+                cancel_check=lambda: True,
+            )
+        self.assertTrue(res.get("cancelled"))
+        self.assertIn("ถูกยกเลิก", res["message"])
+
+    def test_find_max_tokens_survives_one_error(self):
+        """A single timeout mid-search must not abort the whole binary search."""
+        from unittest import mock
+        from app import model_probe
+
+        calls = {"n": 0}
+
+        def _flaky(url, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                import requests as rq
+                raise rq.ConnectionError("test timeout")
+            return self._fake_resp(200)
+
+        with mock.patch("app.model_probe.requests.post", side_effect=_flaky):
+            res = model_probe.find_max_tokens("http://127.0.0.1:9/", "", "m", context=100000)
+        self.assertTrue(res["ok"])
+        self.assertGreater(res["max_tokens"], 0)
+        self.assertGreaterEqual(calls["n"], 2)  # kept searching after the error
+
+    def test_tool_call_sends_force_prompt(self):
+        """test_tool_call must instruct the model to call the tool (avoid false negative)."""
+        from unittest import mock
+        from app import model_probe
+
+        sent = {}
+
+        def _capture(url, **kw):
+            sent["body"] = kw.get("json")
+            return self._fake_resp(200)
+
+        with mock.patch("app.model_probe.requests.post", side_effect=_capture):
+            res = model_probe.test_tool_call("http://127.0.0.1:9/", "", "m")
+        self.assertTrue(res["ok"])
+        body = sent["body"]
+        roles = [m["role"] for m in body["messages"]]
+        self.assertIn("system", roles)
+        self.assertIn("tools", body)
+        joined = " ".join(m["content"] for m in body["messages"])
+        self.assertIn("get_time", joined)
 
 
 class TestMaskSecrets(unittest.TestCase):

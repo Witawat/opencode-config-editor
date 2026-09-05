@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QObject, QThread
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTextEdit,
     QAbstractItemView,
+    QProgressDialog,
 )
 
 from .config_model import ConfigModel, parse_money
@@ -77,6 +78,41 @@ class _ReorderTree(QTreeWidget):
         pname = target.text(0) if target else ""
         if pname:
             self.order_changed.emit(pname)
+
+
+class _ProbeWorker(QObject):
+    """Runs probe_model() off the GUI thread, reporting each step by label.
+
+    Lives on its own QThread; emits `progress` before every step so the UI can
+    show what the probe is doing, and `finished` with the result dict.
+    """
+
+    progress = Signal(str)
+    finished = Signal(dict)
+
+    def __init__(self, base: str, api_key: str, model: str, context: int,
+                 effort_values, parent=None):
+        super().__init__(parent)
+        self._base = base
+        self._key = api_key
+        self._model = model
+        self._context = context
+        self._effort = effort_values
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from .model_probe import probe_model
+
+        res = probe_model(
+            self._base, self._key, self._model,
+            context=self._context, effort_values=self._effort,
+            progress_cb=self.progress.emit,
+            cancel_check=lambda: self._cancel,
+        )
+        self.finished.emit(res)
 
 
 class ProviderPanel(QWidget):
@@ -275,8 +311,17 @@ class ProviderPanel(QWidget):
 
         auto_row = QHBoxLayout()
         self.btn_autofill = QPushButton("ดึงค่าอัตโนมัติ (models.dev)")
+        self.btn_autofill.setToolTip("ดึง limit/cost/reasoning/tool_call/options ที่ถูกต้องจาก models.dev")
         self.btn_autofill.clicked.connect(self.autofill_model)
+        self.btn_test_model = QPushButton("ทดสอบ model")
+        self.btn_test_model.setToolTip("ทดสอบว่า model นี้ใช้กับ API ของ provider ได้จริง (เรียก /models และ /chat/completions)")
+        self.btn_test_model.clicked.connect(self.test_model)
+        self.btn_probe = QPushButton("Probe ค่าจริง")
+        self.btn_probe.setToolTip("ยิง API จริงเพื่อหาค่าที่ถูกต้อง: max_tokens, ฟิลด์ reasoning (interleaved), reasoning_effort, tool_call")
+        self.btn_probe.clicked.connect(self.probe_model_ui)
         auto_row.addWidget(self.btn_autofill)
+        auto_row.addWidget(self.btn_test_model)
+        auto_row.addWidget(self.btn_probe)
         auto_row.addStretch()
         form.addRow("", auto_row)
 
@@ -659,6 +704,8 @@ class ProviderPanel(QWidget):
 
         import json as _json
 
+        from .model_registry import derive_options
+
         lim = info.get("limit") or {}
         cost = info.get("cost") or {}
         if lim.get("context") is not None:
@@ -677,13 +724,27 @@ class ProviderPanel(QWidget):
         self.m_tool_call.setChecked(bool(info.get("tool_call", False)))
         if info.get("name"):
             self.m_name.setText(str(info["name"]))
-        # merge options-ish data (interleaved etc.) into extra keys
+        # fill the correct "options" from registry-derived values
+        derived = derive_options(info)
+        current_opts = self.m_options.toPlainText().strip()
+        merged_opts: dict[str, Any] = {}
+        if current_opts:
+            try:
+                parsed = _json.loads(current_opts)
+                if isinstance(parsed, dict):
+                    merged_opts.update(parsed)
+            except _json.JSONDecodeError:
+                pass
+        merged_opts.update(derived)
+        self.m_options.setPlainText(_json.dumps(merged_opts, ensure_ascii=False, indent=2) if merged_opts else "")
+        # merge interleaved (already in derived) + any other registry extras
         extra: dict[str, Any] = {}
         if isinstance(info.get("interleaved"), dict):
             extra["interleaved"] = info["interleaved"]
-        if isinstance(info.get("options"), dict):
-            for k, v in info["options"].items():
-                extra.setdefault(k, v)
+        for k, v in derived.items():
+            if k in ("image", "reasoning_effort"):
+                continue  # handled in options above
+            extra.setdefault(k, v)
         if extra:
             current = self.m_extra.toPlainText().strip()
             merged: dict[str, Any] = {}
@@ -700,8 +761,165 @@ class ProviderPanel(QWidget):
         found = []
         if lim: found.append("limit")
         if cost: found.append("cost")
+        if derived: found.append("options")
         found.append("ความจุ")
         QMessageBox.information(self, "ดึงค่าอัตโนมัติ", f"เติมแล้วจาก models.dev (ต่อไปนี้: {', '.join(found)})")
+
+    def test_model(self) -> None:
+        """Test the current model against the provider's API (uses baseURL/apiKey)."""
+        pname, mkey = self._selected_provider, self._selected_model
+        if not pname or not mkey:
+            QMessageBox.information(self, "ทดสอบ model", "เลือก model ก่อน")
+            return
+        p = self.config.provider(pname) or {}
+        opts = p.get("options", {}) if isinstance(p, dict) else {}
+        base = str(opts.get("baseURL", "")).strip()
+        if not base:
+            QMessageBox.warning(self, "ทดสอบ model", "ยังไม่มี baseURL ของ provider — ไปกรอกในแท็บ Provider ก่อน")
+            return
+        apikey = str(opts.get("apiKey", "")).strip()
+        from .model_registry import test_model_api
+
+        self.btn_test_model.setEnabled(False)
+        self.btn_test_model.setText("กำลังทดสอบ...")
+        try:
+            res = test_model_api(base, apikey, mkey)
+        finally:
+            self.btn_test_model.setEnabled(True)
+            self.btn_test_model.setText("ทดสอบ model")
+        getattr(QMessageBox, "information" if res.get("ok") else "warning")(
+            self, "ทดสอบ model", f"{pname}/{mkey}\n\n{res.get('message', '')}"
+        )
+
+    def probe_model_ui(self) -> None:
+        """Probe the real API in a background thread with a live progress dialog."""
+        pname, mkey = self._selected_provider, self._selected_model
+        if not pname or not mkey:
+            QMessageBox.information(self, "Probe ค่าจริง", "เลือก model ก่อน")
+            return
+        p = self.config.provider(pname) or {}
+        opts = p.get("options", {}) if isinstance(p, dict) else {}
+        base = str(opts.get("baseURL", "")).strip()
+        if not base:
+            QMessageBox.warning(self, "Probe ค่าจริง", "ยังไม่มี baseURL ของ provider — ไปกรอกในแท็บ Provider ก่อน")
+            return
+        apikey = str(opts.get("apiKey", "")).strip()
+        context = self.m_context.value()
+        from .model_registry import reasoning_effort_options
+
+        # prefer the registry's advertised reasoning_effort values for this
+        # model; fall back to probing the broad set when unknown
+        effort_values = reasoning_effort_options(pname, mkey) or None
+
+        self.btn_probe.setEnabled(False)
+        self.btn_probe.setText("กำลัง probe...")
+
+        self._probe_meta = (pname, mkey)
+        self._probe_dlg = QProgressDialog("กำลังเริ่ม probe...", "ยกเลิก", 0, 0, self)
+        self._probe_dlg.setWindowTitle("Probe ค่าจริง")
+        self._probe_dlg.setWindowModality(Qt.WindowModal)
+        self._probe_dlg.setMinimumDuration(0)
+        self._probe_dlg.setCancelButtonText("ยกเลิก")
+
+        self._probe_thread = QThread(self)
+        self._probe_worker = _ProbeWorker(base, apikey, mkey, context, effort_values)
+        self._probe_worker.moveToThread(self._probe_thread)
+        self._probe_thread.started.connect(self._probe_worker.run)
+        self._probe_worker.progress.connect(self._probe_dlg.setLabelText)
+        self._probe_worker.finished.connect(self._probe_done)
+        self._probe_dlg.canceled.connect(self._probe_worker.cancel)
+        self._probe_thread.finished.connect(self._probe_worker.deleteLater)
+        self._probe_thread.finished.connect(self._probe_thread.deleteLater)
+        self._probe_thread.start()
+
+    def _probe_done(self, res: dict) -> None:
+        """Worker finished: stop the thread, close the dialog, fill the form."""
+        if self._probe_thread is not None:
+            self._probe_thread.quit()
+            self._probe_thread.wait(3000)
+        if self._probe_dlg is not None:
+            self._probe_dlg.close()
+            self._probe_dlg = None
+        self.btn_probe.setEnabled(True)
+        self.btn_probe.setText("Probe ค่าจริง")
+        self._probe_fill_form(res)
+
+    def _probe_fill_form(self, res: dict) -> None:
+        """Apply probe findings to the model form (auto-updates BOTH JSON boxes)."""
+        pname, mkey = self._probe_meta
+        if res.get("cancelled"):
+            QMessageBox.information(self, "Probe ค่าจริง", res.get("message", "ถูกยกเลิก"))
+            return
+        if not res.get("ok"):
+            QMessageBox.warning(self, "Probe ค่าจริง", res.get("message", "ล้มเหลว"))
+            return
+
+        import json as _json
+
+        applied: list[str] = []
+
+        if res.get("max_tokens"):
+            self.m_output.setValue(int(res["max_tokens"]))
+            applied.append(f"output={res['max_tokens']}")
+
+        # 1) options (JSON): reasoning_effort + image (vision)
+        cur_opts = self.m_options.toPlainText().strip()
+        opts: dict[str, Any] = {}
+        if cur_opts:
+            try:
+                parsed = _json.loads(cur_opts)
+                if isinstance(parsed, dict):
+                    opts.update(parsed)
+            except _json.JSONDecodeError:
+                pass
+        if res.get("reasoning_effort"):
+            opts["reasoning_effort"] = res["reasoning_effort"]
+            applied.append(f"reasoning_effort={res['reasoning_effort']}")
+            all_efforts = res.get("effort_values") or []
+            if len(all_efforts) > 1:
+                applied.append("ใช้ได้ " + ", ".join(all_efforts) + " (เลือกค่าต่ำสุด)")
+        else:
+            opts.pop("reasoning_effort", None)  # not supported -> remove stale
+        if res.get("image_support") is True:
+            opts["image"] = True
+            applied.append("image=true (vision)")
+        elif res.get("image_support") is False:
+            opts.pop("image", None)  # no vision -> remove stale
+        self.m_options.setPlainText(_json.dumps(opts, ensure_ascii=False, indent=2) if opts else "")
+
+        # 2) extra keys (JSON): interleaved field (only if reasoning model)
+        if res.get("reasoning_field"):
+            self.m_reasoning.setChecked(True)
+            applied.append(f"interleaved={res['reasoning_field']}")
+        cur_extra = self.m_extra.toPlainText().strip()
+        merged_extra: dict[str, Any] = {}
+        if cur_extra:
+            try:
+                parsed = _json.loads(cur_extra)
+                if isinstance(parsed, dict):
+                    merged_extra.update(parsed)
+            except _json.JSONDecodeError:
+                pass
+        if res.get("reasoning_field"):
+            merged_extra["interleaved"] = {"field": res["reasoning_field"]}
+        else:
+            merged_extra.pop("interleaved", None)  # not a reasoning model -> drop stale
+        if merged_extra:
+            self.m_extra.setPlainText(_json.dumps(merged_extra, ensure_ascii=False, indent=2))
+        else:
+            self.m_extra.clear()
+
+        # 3) tool_call checkbox
+        if res.get("tool_call") is not None:
+            self.m_tool_call.setChecked(bool(res["tool_call"]))
+            applied.append("tool_call=" + ("true" if res["tool_call"] else "false"))
+
+        self._mark_changed()
+        QMessageBox.information(
+            self, "Probe ค่าจริง",
+            f"ผลสำหรับ {pname}/{mkey}:\n\n{res.get('message', '')}\n\n"
+            f"อัปเดตช่อง JSON แล้ว: {', '.join(applied) if applied else '—'}"
+        )
 
     def _sync_model_order(self, pname: str) -> None:
         """Rebuild the provider's models dict to match the new tree order after drag-drop."""

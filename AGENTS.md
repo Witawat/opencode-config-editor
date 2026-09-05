@@ -36,9 +36,10 @@ app/misc_panels.py      # agent / skill / permission
 app/global_panel.py     # model/small_model/instructions/compaction/whitelist/blacklist
 app/preview_panel.py    # live JSON preview + mask secrets
 app/model_registry.py   # auto-fill จาก models.dev + ทดสอบ API
+app/model_probe.py      # Probe ค่าจริงจาก API (max_tokens/reasoning/effort/tool/vision)
 app/styles.py           # theme QSS + ฟอนต์ + QSettings
 test_smoke.py           # smoke test (offscreen)
-test_roundtrip.py       # unit test (38 cases)
+test_roundtrip.py       # unit test (64 cases)
 test_functional.py      # e2e test ขับ widgets จริง
 run.bat                 # double-click เปิดแอป
 build.bat               # double-click บิลด์ exe
@@ -52,7 +53,7 @@ assets/opencode.ico     # ไอคอน opencode (ทางการ)
 run.bat                                 # เปิดแอป (ใช้ venv อัตโนมัติ)
 build.bat                               # บิลด์ exe (build.bat --clean เพื่อลบก่อน)
 .venv\Scripts\python.exe main.py        # รันตรง
-.venv\Scripts\python.exe test_roundtrip.py   # unit test (38)
+.venv\Scripts\python.exe test_roundtrip.py   # unit test (64)
 .venv\Scripts\python.exe test_functional.py <copy-config>  # e2e
 .venv\Scripts\python.exe test_smoke.py  # smoke test (ใช้ copy)
 .venv\Scripts\pip install -r requirements.txt
